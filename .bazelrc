@@ -1,0 +1,4 @@
+build --disk_cache=~/.cache/bazel-disk-cache
+build --sandbox_base=/dev/shm
+build --jobs=8
+startup --output_user_root=~/.cache/bazel

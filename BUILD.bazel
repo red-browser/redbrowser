@@ -1,0 +1,11 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary")
+
+zig_binary(
+    name = "red-browser",
+    srcs = [
+        "src/main.zig",
+        "src/window.zig",
+    ],
+    main = "src/main.zig",
+    visibility = ["//visibility:public"],
+)

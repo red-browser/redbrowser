@@ -1,0 +1,18 @@
+*
+
+!.gitignore
+!nix/
+!nix/*.nix
+!docs/
+!docs/*.md
+!*.md
+
+!browser/
+# !browser/*.zig
+!browser/*.bazel
+
+!*.bazel
+!*.nix
+
+!flake.lock
+!.bazelrc
