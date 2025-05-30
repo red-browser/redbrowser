@@ -2,6 +2,7 @@
 
 !.gitignore
 !nix/
+!brand/
 !nix/*.nix
 !docs/
 !docs/*.md

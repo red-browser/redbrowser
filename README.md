@@ -1,5 +1,5 @@
-# axolotl
-a trail to develop a browser engine
+# Red Browser
+GPU accelerated browser written in Zig, and uses browser engine in rust named [axolotl](https://www.github.com/red-browser/axolotl).
 
 ## Contributing
 
