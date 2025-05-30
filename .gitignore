@@ -12,6 +12,7 @@
 !browser/*.bazel
 
 !*.bazel
+# !*.zig
 !*.nix
 
 !flake.lock
