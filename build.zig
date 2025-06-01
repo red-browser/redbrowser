@@ -30,6 +30,8 @@ pub fn build(b: *std.Build) void {
     window_module.addImport("glfw", glfw_module);
     renderer_module.addImport("zgl", zgl_module);
     renderer_module.addImport("window", window_module);
+    // <--- YOU NEED TO ADD THIS LINE HERE!
+    renderer_module.addImport("glfw", glfw_module); // <--- THIS IS THE MISSING LINE FROM PREVIOUS ATTEMPTS
 
     exe.root_module.addImport("renderer", renderer_module);
     exe.root_module.addImport("window", window_module);
