@@ -264,7 +264,20 @@ pub const GamepadAxisLeftTrigger: GamepadAxis = 4;
 pub const GamepadAxisRightTrigger: GamepadAxis = 5;
 pub const GamepadAxisLast: GamepadAxis = 5;
 
-pub const GLFWError = error{ NotInitialized, NoCurrentContext, InvalidEnum, InvalidValue, OutOfMemory, APIUnavailable, VersionUnavailable, PlatformError, FormatUnavailable, NoWindowContext, NoError };
+pub const GLFWError = error{
+    NotInitialized,
+    NoCurrentContext,
+    InvalidEnum,
+    InvalidValue,
+    OutOfMemory,
+    APIUnavailable,
+    VersionUnavailable,
+    PlatformError,
+    FormatUnavailable,
+    NoWindowContext,
+    NoError,
+    UnknownGlfwError,
+};
 
 pub const ErrorCode = c_int;
 pub const NotInitialized: ErrorCode = 0x00010001;
@@ -465,7 +478,7 @@ pub const Connection = c_int;
 pub const Connected: Connection = 0x00040001;
 pub const Disconnected: Connection = 0x00040002;
 
-pub const InitHint = c_int;
+pub const InitHint = std.c.c_int;
 pub const JoystickHatButtons: InitHint = 0x00050001;
 pub const CocoaChdirResources: InitHint = 0x00051001;
 pub const CocoaMenubar: InitHint = 0x00051002;
@@ -525,10 +538,27 @@ pub const Image = extern struct { width: i32, height: i32, pixels: ?[*]u8 };
 
 pub const GamepadState = extern struct { buttons: [15]u8, axes: [6]f32 };
 
-extern fn glfwInit() c_int;
+const c = @cImport({
+    @cInclude("GLFW/glfw3.h");
+});
 
 pub fn init() !void {
-    if (glfwInit() != 1) {
+    if (c.glfwInit() != c.GLFW_TRUE) {
+        // --- CORRECTED DECLARATION AND USAGE FOR `description` ---
+        // Declare as a C-compatible string pointer.
+        var description_c_str_ptr: [*c]const u8 = undefined; // Initialize to undefined or null
+
+        // Pass the address of this C-compatible string pointer to glfwGetError.
+        // This makes the type `[*c][*c]const u8`, matching the C function's expectation.
+        _ = c.glfwGetError(&description_c_str_ptr);
+
+        // Now, convert the C string pointer received from GLFW into a Zig slice for safe use.
+        const error_message = if (description_c_str_ptr != null)
+            std.mem.span(description_c_str_ptr)
+        else
+            "No description available.";
+
+        std.log.err("GLFW initialization failed! Error: {s}", .{error_message});
         return GLFWError.PlatformError;
     }
 }
@@ -537,22 +567,32 @@ extern fn glfwTerminate() void;
 extern fn glfwGetError(description: ?[*:0]const u8) c_int;
 
 fn errorCheck() !void {
-    const code: c_int = glfwGetError(null);
-    const err = switch (code) {
-        NotInitialized => GLFWError.NotInitialized,
-        NoCurrentContext => GLFWError.NoCurrentContext,
-        InvalidEnum => GLFWError.InvalidEnum,
-        InvalidValue => GLFWError.InvalidValue,
-        OutOfMemory => GLFWError.OutOfMemory,
-        APIUnavailable => GLFWError.APIUnavailable,
-        VersionUnavailable => GLFWError.VersionUnavailable,
-        PlatformError => GLFWError.PlatformError,
-        FormatUnavailable => GLFWError.FormatUnavailable,
-        NoWindowContext => GLFWError.NoWindowContext,
-        NoError => GLFWError.NoError,
-        else => GLFWError.NoError,
+    const code = c.glfwGetError(null); // <--- CHANGE HERE: Removed `std.c.c_int`
+
+    // Now, you'll need to make sure the switch statement constants match `code`'s inferred type.
+    // If `c.glfwGetError` returns a specific enum or other type from GLFW, you'd use that.
+    // Otherwise, it's likely still an integer type, and the `c.GLFW_NOT_INITIALIZED` constants
+    // should have the same type, which @cImport usually handles.
+
+    const err_zig = switch (code) {
+        c.GLFW_NOT_INITIALIZED => GLFWError.NotInitialized, // These should be fine if from c
+        c.GLFW_NO_CURRENT_CONTEXT => GLFWError.NoCurrentContext,
+        c.GLFW_INVALID_ENUM => GLFWError.InvalidEnum,
+        c.GLFW_INVALID_VALUE => GLFWError.InvalidValue,
+        c.GLFW_OUT_OF_MEMORY => GLFWError.OutOfMemory,
+        c.GLFW_API_UNAVAILABLE => GLFWError.APIUnavailable,
+        c.GLFW_VERSION_UNAVAILABLE => GLFWError.VersionUnavailable,
+        c.GLFW_PLATFORM_ERROR => GLFWError.PlatformError,
+        c.GLFW_FORMAT_UNAVAILABLE => GLFWError.FormatUnavailable,
+        c.GLFW_NO_WINDOW_CONTEXT => GLFWError.NoWindowContext,
+        c.GLFW_NO_ERROR => GLFWError.NoError,
+        else => return error.UnknownGlfwError,
     };
-    return err;
+
+    if (err_zig != GLFWError.NoError) {
+        return err_zig;
+    }
+    return {};
 }
 
 fn errorCheck2() void {
@@ -569,9 +609,9 @@ pub fn terminate() void {
 }
 
 extern fn glfwInitHint(hint: c_int, value: c_int) void;
-pub fn initHint(hint: InitHint, value: bool) void {
-    glfwInitHint((hint), @intFromBool(value));
-    errorCheck2();
+pub fn initHint(hint: std.c.c_int, value: bool) void { // This should remain `std.c.c_int`
+    c.glfwInitHint(hint, @intFromBool(value));
+    // errorCheck2(); // Keep commented out
 }
 
 extern fn glfwGetVersion(major: *c_int, minor: *c_int, rev: *c_int) void;

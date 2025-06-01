@@ -1,6 +1,10 @@
+// src/gpu/window/window.zig
+
 const std = @import("std");
-const glfw = @import("glfw");
+const glfw = @import("glfw"); // Module import
 const Allocator = std.mem.Allocator;
+
+const log = std.log.scoped(.Window);
 
 pub const Window = struct {
     handle: *glfw.Window,
@@ -13,16 +17,40 @@ pub const Window = struct {
     };
 
     pub fn init(allocator: Allocator, options: Options) !Window {
+        log.debug("Initializing GLFW (starting glfw.init call)...", .{}); // VERY PRECISE LOG 1
+
         try glfw.init();
+
+        log.debug("Initializing GLFW (glfw.init call returned successfully).", .{}); // VERY PRECISE LOG 2
+
         errdefer glfw.terminate();
 
+        log.debug("GLFW initialized successfully. Setting window hints...", .{});
+
+        // Set window hints
         glfw.windowHint(glfw.ClientAPI, glfw.OpenGLAPI);
+        log.debug("Set ClientAPI hint.", .{});
+
         glfw.windowHint(glfw.ContextVersionMajor, 4);
+        log.debug("Set ContextVersionMajor hint.", .{});
+
         glfw.windowHint(glfw.ContextVersionMinor, 6);
+        log.debug("Set ContextVersionMinor hint.", .{});
+
         glfw.windowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile);
+        log.debug("Set OpenGLProfile hint.", .{});
+
         glfw.windowHint(glfw.OpenGLForwardCompat, 1);
+        log.debug("Set OpenGLForwardCompat hint.", .{});
+
+        log.debug("All window hints set. Creating window: '{s}' ({d}x{d})...", .{ options.title, options.width, options.height });
 
         const handle = try glfw.createWindow(@intCast(options.width), @intCast(options.height), options.title, null, null);
+
+        glfw.makeContextCurrent(handle);
+        log.debug("OpenGL context made current.", .{});
+
+        log.debug("Window initialized successfully.", .{});
 
         return Window{
             .handle = handle,
@@ -31,7 +59,9 @@ pub const Window = struct {
     }
 
     pub fn deinit(self: *Window) void {
+        log.debug("Destroying window...", .{});
         glfw.destroyWindow(self.handle);
+        log.debug("Terminating GLFW...", .{});
         glfw.terminate();
     }
 
