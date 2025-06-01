@@ -14,9 +14,7 @@
 
 !libs/
 
-!*.bazel
 !*.zig
 !*.nix
 
 !flake.lock
-!.bazelrc
