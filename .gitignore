@@ -8,9 +8,11 @@
 !docs/*.md
 !*.md
 
-!browser/
-# !browser/*.zig
-!browser/*.bazel
+!src/
+!src/fonts/*.zig
+!src/gpu/
+
+!libs/
 
 !*.bazel
 !*.zig

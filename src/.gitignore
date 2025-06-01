@@ -1,0 +1,16 @@
+!.gitignore
+
+!fonts/
+!fonts/*.zig
+
+!gpu/
+!gpu/renderer/
+!gpu/renderer/*.zig
+!gpu/window/
+!gpu/window/*.zig
+
+!shaders/
+!shaders/*.frag
+!shaders/*.vert
+!shaders/*.zig
+

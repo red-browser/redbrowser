@@ -1,0 +1,14 @@
+!.gitignore
+
+!zgl/
+!zgl/*.zig
+
+!zglfw/
+!zglfw/*.zig
+
+!zig-glfw/
+!zig-glfw/src/
+!zig-glfw/src/*.zig
+
+!zig-opengl/
+!zig-opengl/*.zig
