@@ -13,7 +13,7 @@
 !browser/*.bazel
 
 !*.bazel
-# !*.zig
+!*.zig
 !*.nix
 
 !flake.lock
