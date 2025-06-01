@@ -28,10 +28,10 @@ pub fn build(b: *std.Build) void {
     });
 
     window_module.addImport("glfw", glfw_module);
+
     renderer_module.addImport("zgl", zgl_module);
     renderer_module.addImport("window", window_module);
-    // <--- YOU NEED TO ADD THIS LINE HERE!
-    renderer_module.addImport("glfw", glfw_module); // <--- THIS IS THE MISSING LINE FROM PREVIOUS ATTEMPTS
+    renderer_module.addImport("glfw", glfw_module);
 
     exe.root_module.addImport("renderer", renderer_module);
     exe.root_module.addImport("window", window_module);
@@ -54,7 +54,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the GPU renderer");
     run_step.dependOn(&run_cmd.step);
 
-    // Tests
     const test_step = b.step("test", "Run all tests");
     const test_filter = b.option([]const u8, "test-filter", "Filter for test");
 
