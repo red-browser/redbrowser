@@ -1,7 +1,5 @@
-// src/gpu/window/window.zig
-
 const std = @import("std");
-const glfw = @import("glfw"); // Module import
+const glfw = @import("glfw");
 const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.Window);
@@ -17,11 +15,11 @@ pub const Window = struct {
     };
 
     pub fn init(allocator: Allocator, options: Options) !Window {
-        log.debug("Initializing GLFW (starting glfw.init call)...", .{}); // VERY PRECISE LOG 1
+        log.debug("Initializing GLFW (starting glfw.init call)...", .{});
 
         try glfw.init();
 
-        log.debug("Initializing GLFW (glfw.init call returned successfully).", .{}); // VERY PRECISE LOG 2
+        log.debug("Initializing GLFW (glfw.init call returned successfully).", .{});
 
         errdefer glfw.terminate();
 
