@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
     exe.linkSystemLibrary("freetype");
     exe.linkSystemLibrary("harfbuzz");
     exe.linkSystemLibrary("z");
+    exe.linkLibC();
 
     b.installArtifact(exe);
 

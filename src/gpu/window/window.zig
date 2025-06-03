@@ -4,6 +4,11 @@ const Allocator = std.mem.Allocator;
 
 const log = std.log.scoped(.Window);
 
+fn glfwErrorCallback(error_code: i32, description: [*:0]const u8) callconv(.C) void {
+    const description_slice = std.mem.span(description);
+    std.debug.print("GLFW Error {d}: {s}\n", .{ error_code, description_slice });
+}
+
 pub const Window = struct {
     handle: *glfw.Window,
     allocator: Allocator,
@@ -16,16 +21,14 @@ pub const Window = struct {
 
     pub fn init(allocator: Allocator, options: Options) !Window {
         log.debug("Initializing GLFW (starting glfw.init call)...", .{});
+        _ = glfw.setErrorCallback(glfwErrorCallback);
 
         try glfw.init();
-
         log.debug("Initializing GLFW (glfw.init call returned successfully).", .{});
 
         errdefer glfw.terminate();
-
         log.debug("GLFW initialized successfully. Setting window hints...", .{});
 
-        // Set window hints
         glfw.windowHint(glfw.ClientAPI, glfw.OpenGLAPI);
         log.debug("Set ClientAPI hint.", .{});
 
@@ -42,14 +45,11 @@ pub const Window = struct {
         log.debug("Set OpenGLForwardCompat hint.", .{});
 
         log.debug("All window hints set. Creating window: '{s}' ({d}x{d})...", .{ options.title, options.width, options.height });
-
         const handle = try glfw.createWindow(@intCast(options.width), @intCast(options.height), options.title, null, null);
-
         glfw.makeContextCurrent(handle);
         log.debug("OpenGL context made current.", .{});
 
         log.debug("Window initialized successfully.", .{});
-
         return Window{
             .handle = handle,
             .allocator = allocator,
