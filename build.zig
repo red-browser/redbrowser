@@ -5,72 +5,42 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "red-gpu",
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/gpu/renderer/main.zig" } },
+        .name = "redbrowser",
+        .root_source_file = b.path("src/gpu/renderer/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const zgl_module = b.createModule(.{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "libs/zgl/zgl.zig" } },
-    });
+    // Add SDL dependency
+    exe.linkSystemLibrary("SDL3");
+    exe.linkSystemLibrary("GL");
+    exe.linkLibC();
 
-    const glfw_module = b.createModule(.{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "libs/zglfw/glfw.zig" } },
-    });
+    // Add include paths
+    exe.addIncludePath(.{ .cwd_relative = "/usr/include" });
+    exe.addIncludePath(.{ .cwd_relative = "/usr/include/SDL3" });
 
+    // Create modules
     const window_module = b.createModule(.{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/gpu/window/window.zig" } },
+        .root_source_file = b.path("src/gpu/window/sdl.zig"),
     });
 
     const renderer_module = b.createModule(.{
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/gpu/renderer/renderer.zig" } },
+        .root_source_file = b.path("src/gpu/renderer/piston.zig"),
     });
 
-    window_module.addImport("glfw", glfw_module);
-
-    renderer_module.addImport("zgl", zgl_module);
+    // Add module dependencies
     renderer_module.addImport("window", window_module);
-    renderer_module.addImport("glfw", glfw_module);
 
-    exe.root_module.addImport("renderer", renderer_module);
+    // Add modules to executable
     exe.root_module.addImport("window", window_module);
-    exe.root_module.addImport("glfw", glfw_module);
-    exe.root_module.addImport("zgl", zgl_module);
-
-    exe.linkSystemLibrary("glfw");
-    exe.linkSystemLibrary("opengl");
-    exe.linkSystemLibrary("freetype");
-    exe.linkSystemLibrary("harfbuzz");
-    exe.linkSystemLibrary("z");
-    exe.linkLibC();
+    exe.root_module.addImport("renderer", renderer_module);
 
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.step.dependOn(b.getInstallStep());
 
-    const run_step = b.step("run", "Run the GPU renderer");
+    const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
-
-    const test_step = b.step("test", "Run all tests");
-    const test_filter = b.option([]const u8, "test-filter", "Filter for test");
-
-    const test_exe = b.addTest(.{
-        .name = "red-gpu-test",
-        .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "src/gpu/renderer/main.zig" } },
-        .target = target,
-        .optimize = optimize,
-        .filter = test_filter,
-    });
-
-    test_exe.root_module.addImport("renderer", renderer_module);
-    test_exe.root_module.addImport("window", window_module);
-    test_exe.root_module.addImport("glfw", glfw_module);
-    test_exe.root_module.addImport("zgl", zgl_module);
-
-    const test_run = b.addRunArtifact(test_exe);
-    test_step.dependOn(&test_run.step);
 }

@@ -12,9 +12,15 @@
 !src/fonts/*.zig
 !src/gpu/
 
+!rust-piston-bindings/
+!rust-piston-bindings/*.rs
+!rust-piston-bindings/*
+
 !libs/
 
 !*.zig
 !*.nix
 
 !flake.lock
+!build.zig.zon
+!build.zig.zon.nix

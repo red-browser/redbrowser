@@ -44,6 +44,10 @@ pub const Window = struct {
         glfw.windowHint(glfw.OpenGLForwardCompat, 1);
         log.debug("Set OpenGLForwardCompat hint.", .{});
 
+        // Force X11 backend
+        glfw.windowHintString(glfw.X11ClassName, "RedBrowser");
+        glfw.windowHintString(glfw.X11InstanceName, "RedBrowser");
+
         log.debug("All window hints set. Creating window: '{s}' ({d}x{d})...", .{ options.title, options.width, options.height });
         const handle = try glfw.createWindow(@intCast(options.width), @intCast(options.height), options.title, null, null);
         glfw.makeContextCurrent(handle);
@@ -80,5 +84,9 @@ pub const Window = struct {
 
     pub fn swapBuffers(self: *Window) void {
         glfw.swapBuffers(self.handle);
+    }
+
+    pub fn getHandle(self: *Window) *anyopaque {
+        return @ptrCast(self.handle);
     }
 };

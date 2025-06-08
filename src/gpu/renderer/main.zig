@@ -1,6 +1,6 @@
 const std = @import("std");
-const Renderer = @import("renderer").Renderer;
 const Window = @import("window").Window;
+const Renderer = @import("renderer").Renderer;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -9,8 +9,8 @@ pub fn main() !void {
 
     var window = try Window.init(allocator, .{
         .title = "Red Browser",
-        .width = 1280,
-        .height = 720,
+        .width = 800,
+        .height = 600,
     });
     defer window.deinit();
 
@@ -18,9 +18,10 @@ pub fn main() !void {
     defer renderer.deinit();
 
     while (!window.shouldClose()) {
-        try renderer.beginFrame();
-        // TODO: Add rendering commands here
-        try renderer.endFrame();
         window.pollEvents();
+
+        renderer.beginFrame();
+        renderer.drawTriangle();
+        renderer.endFrame();
     }
 }

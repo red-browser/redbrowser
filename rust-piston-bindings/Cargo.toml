@@ -1,0 +1,27 @@
+[package]
+name = "rust-piston-bindings"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+piston = "1.0.0"
+pistoncore-event_loop = "1.0.0"
+pistoncore-input = "1.0.1"
+pistoncore-window = "1.0.0"
+piston_window = "0.132.0"
+piston2d_graphics = { package = "piston2d-graphics", version = "0.44.0" }
+piston2d_opengl_graphics = { package = "piston2d-opengl_graphics", version = "0.83.0" }
+rusttype = "0.9.3"
+fnv = "1.0.7"
+glfw = "0.46.0"
+glutin = "0.30.10"
+glutin_glx_sys = "0.4.0"
+gfx_device_gl = "0.16.2"
+winit = "0.29.0"
+gfx_gl = "0.6.1"
+
+[build-dependencies]
+cc = "1.0"
