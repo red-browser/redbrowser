@@ -89,6 +89,7 @@ pub fn about(a: std.mem.Allocator, which: []const u8) ![]u8 {
     if (std.mem.eql(u8, which, "home") or std.mem.eql(u8, which, "newtab")) return themed(a, home);
     if (std.mem.eql(u8, which, "redbrowser")) return themed(a, about_page);
     if (std.mem.startsWith(u8, which, "settings")) return settingsPage(a);
+    if (std.mem.eql(u8, which, "firefox")) return firefoxPage(a);
     if (std.mem.eql(u8, which, "blank")) return themed(a, "<html><head><title>about:blank</title></head><body bgcolor=\"{bg}\"></body></html>");
     return errorPage(a, which, "UnknownAboutPage");
 }
@@ -216,7 +217,8 @@ fn settingsPage(a: std.mem.Allocator) ![]u8 {
         \\</tr></table>
         \\<p style="color:{muted}">Tip: you can also drag &amp; drop an image onto the window.</p>
         \\<h3 style="margin-top:32px; font-family:monospace">about</h3>
-        \\<p><a href="about:redbrowser" style="color:{link}">Engine &amp; keyboard shortcuts</a></p>
+        \\<p><a href="about:firefox" style="color:{link}">about:firefox</a> <span style="color:{muted}">&mdash; the Firefox components in use and their versions</span></p>
+        \\<p><a href="about:redbrowser" style="color:{link}">about:redbrowser</a> <span style="color:{muted}">&mdash; architecture &amp; keyboard shortcuts</span></p>
         \\</div></body></html>
     );
     // wallpaper chips
@@ -232,4 +234,74 @@ fn settingsPage(a: std.mem.Allocator) ![]u8 {
     const page = try std.mem.replaceOwned(u8, a, out.items, "{wallpaper}", chips.items);
     defer a.free(page);
     return themed(a, page);
+}
+
+/// Look up `name` in the `name=version;` list exported by the engine bridge.
+fn engineVersion(name: []const u8) []const u8 {
+    const all = std.mem.span(@import("../engine/ffi.zig").re_engine_versions());
+    var it = std.mem.splitScalar(u8, all, ';');
+    while (it.next()) |pair| {
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (std.mem.eql(u8, pair[0..eq], name)) return pair[eq + 1 ..];
+    }
+    return "unknown";
+}
+
+/// about:firefox — which Mozilla/Servo components this build links, with the
+/// exact versions recorded at build time (engine/build.rs reads Cargo.lock).
+fn firefoxPage(a: std.mem.Allocator) ![]u8 {
+    var out = std.ArrayList(u8).init(a);
+    defer out.deinit();
+    const w = out.writer();
+    try w.writeAll(
+        \\<html><head><title>about:firefox</title></head>
+        \\<body bgcolor="{bg}" text="{text}" style="margin:0">
+        \\<div style="max-width:820px; margin:0 auto; padding:40px 24px">
+        \\<h1 style="color:{brand}; margin-bottom:4px; font-family:monospace">❯ about:firefox</h1>
+        \\<p style="color:{muted}; margin-top:0">Red Browser does not bundle a Firefox release: Firefox's Gecko engine
+        \\cannot be embedded in another application. Instead it links these components from Firefox and
+        \\from Servo (Mozilla's Rust engine project), so there is no single "Firefox version" to report.
+        \\The versions below are the exact ones compiled into this build.</p>
+        \\<h3 style="margin-top:32px; font-family:monospace">firefox / servo components</h3>
+        \\<table cellspacing="0" cellpadding="8" width="100%">
+        \\<tr><td><b>component</b></td><td><b>version</b></td><td><b>from</b></td><td><b>role here</b></td></tr>
+    );
+    const Row = struct { label: []const u8, crate: []const u8, from: []const u8, role: []const u8 };
+    const rows = [_]Row{
+        .{ .label = "WebRender", .crate = "webrender", .from = "Firefox", .role = "GPU renderer: draws every page and the browser UI" },
+        .{ .label = "WebRender API", .crate = "webrender_api", .from = "Firefox", .role = "display lists, fonts, images, clips" },
+        .{ .label = "WR glyph rasterizer", .crate = "wr_glyph_rasterizer", .from = "Firefox", .role = "text rasterisation (Core Text / FreeType / DirectWrite)" },
+        .{ .label = "gleam", .crate = "gleam", .from = "Servo", .role = "OpenGL bindings used by WebRender" },
+        .{ .label = "html5ever", .crate = "html5ever", .from = "Servo", .role = "spec-compliant HTML5 parser" },
+        .{ .label = "markup5ever", .crate = "markup5ever", .from = "Servo", .role = "shared DOM / tokenizer types" },
+    };
+    for (rows, 0..) |r, i| {
+        try w.print("<tr><td bgcolor=\"{s}\"><b>{s}</b></td><td bgcolor=\"{s}\"><code>{s}</code></td><td bgcolor=\"{s}\">{s}</td><td bgcolor=\"{s}\" style=\"color:{{muted}}\">{s}</td></tr>", .{
+            if (i % 2 == 0) "{card}" else "{bg}", r.label,
+            if (i % 2 == 0) "{card}" else "{bg}", engineVersion(r.crate),
+            if (i % 2 == 0) "{card}" else "{bg}", r.from,
+            if (i % 2 == 0) "{card}" else "{bg}", r.role,
+        });
+    }
+    try w.print(
+        \\</table>
+        \\<h3 style="margin-top:32px; font-family:monospace">not from firefox (yet)</h3>
+        \\<table cellspacing="0" cellpadding="8" width="100%">
+        \\<tr><td bgcolor="{{card}}"><b>CSS</b></td><td bgcolor="{{card}}" style="color:{{muted}}">Firefox uses Stylo; Red Browser applies a simplified user-agent + inline style system written in Zig.</td></tr>
+        \\<tr><td bgcolor="{{bg}}"><b>JavaScript</b></td><td bgcolor="{{bg}}" style="color:{{muted}}">Firefox uses SpiderMonkey; Red Browser does not run scripts yet.</td></tr>
+        \\<tr><td bgcolor="{{card}}"><b>Networking</b></td><td bgcolor="{{card}}" style="color:{{muted}}">Firefox uses Necko; Red Browser uses Zig's standard HTTP client.</td></tr>
+        \\<tr><td bgcolor="{{bg}}"><b>Layout</b></td><td bgcolor="{{bg}}" style="color:{{muted}}">Red Browser's own block / inline / table layout, written in Zig.</td></tr>
+        \\</table>
+        \\<h3 style="margin-top:32px; font-family:monospace">this build</h3>
+        \\<table cellspacing="0" cellpadding="8">
+        \\<tr><td bgcolor="{{card}}"><b>Red Browser</b></td><td bgcolor="{{card}}"><code>0.1</code></td></tr>
+        \\<tr><td bgcolor="{{bg}}"><b>Zig</b></td><td bgcolor="{{bg}}"><code>{s}</code></td></tr>
+        \\<tr><td bgcolor="{{card}}"><b>Rust</b></td><td bgcolor="{{card}}"><code>{s}</code></td></tr>
+        \\<tr><td bgcolor="{{bg}}"><b>image</b></td><td bgcolor="{{bg}}"><code>{s}</code></td></tr>
+        \\<tr><td bgcolor="{{card}}"><b>ttf-parser</b></td><td bgcolor="{{card}}"><code>{s}</code></td></tr>
+        \\</table>
+        \\<p style="margin-top:32px"><a href="about:settings" style="color:{{link}}">&larr; settings</a></p>
+        \\</div></body></html>
+    , .{ @import("builtin").zig_version_string, engineVersion("rustc"), engineVersion("image"), engineVersion("ttf-parser") });
+    return themed(a, out.items);
 }

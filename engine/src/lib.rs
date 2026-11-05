@@ -737,6 +737,12 @@ impl Engine {
     }
 }
 
+/// `name=version;` pairs for the linked engine crates and rustc (see build.rs).
+#[no_mangle]
+pub extern "C" fn re_engine_versions() -> *const c_char {
+    concat!(env!("REDENGINE_VERSIONS"), "\0").as_ptr() as *const c_char
+}
+
 // ---------------------------------------------------------------------------
 // HTML parsing (html5ever) → flat node array
 // ---------------------------------------------------------------------------

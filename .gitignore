@@ -38,3 +38,4 @@
 !assets/fonts/
 !assets/fonts/*.ttf
 !assets/fonts/OFL.txt
+!engine/build.rs

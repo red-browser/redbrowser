@@ -57,6 +57,8 @@ pub extern fn re_text(e: *Engine, font: u32, size: f32, x: f32, y: f32, text: [*
 pub extern fn re_push_clip(e: *Engine, x: f32, y: f32, w: f32, h: f32, radius: f32) void;
 pub extern fn re_pop_clip(e: *Engine) void;
 
+pub extern fn re_engine_versions() [*:0]const u8;
+
 // HTML parser (html5ever)
 pub extern fn re_html_parse(input: [*]const u8, len: usize) ?*Doc;
 pub extern fn re_doc_free(doc: *Doc) void;
