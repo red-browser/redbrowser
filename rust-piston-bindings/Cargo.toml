@@ -7,6 +7,9 @@ edition = "2021"
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
+axolotl = { path = "../../axolotl" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 piston = "1.0.0"
 pistoncore-event_loop = "1.0.0"
 pistoncore-input = "1.0.1"

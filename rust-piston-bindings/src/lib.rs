@@ -128,3 +128,45 @@ pub extern "C" fn present_frame(graphics_ptr: *mut c_void) {
     let _graphics = unsafe { &mut *(graphics_ptr as *mut PistonGraphics) };
 }
 
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
+
+#[no_mangle]
+pub extern "C" fn redbrowser_engine_name() -> *const c_char {
+    static NAME: &[u8] = b"Gecko WebRender (Mozilla Firefox Pipeline) + Axolotl Core (Rust)\0";
+    NAME.as_ptr() as *const c_char
+}
+
+#[no_mangle]
+pub extern "C" fn axolotl_parse_html(input: *const c_char) -> *mut c_char {
+    if input.is_null() {
+        return std::ptr::null_mut();
+    }
+    let c_str = unsafe { CStr::from_ptr(input) };
+    let html = match c_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let mut parser = axolotl::html::Parser::new(html.to_string());
+    let dom = parser.parse();
+    let json = axolotl::json::node_to_json(&dom);
+    let json_str = serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string());
+
+    let c_string = match CString::new(json_str) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    c_string.into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn axolotl_free_string(ptr: *mut c_char) {
+    if !ptr.is_null() {
+        unsafe {
+            let _ = CString::from_raw(ptr);
+        }
+    }
+}
+
+

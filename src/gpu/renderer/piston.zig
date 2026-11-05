@@ -1,9 +1,18 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Window = @import("window").Window;
 const c = @cImport({
     @cInclude("SDL3/SDL.h");
-    @cInclude("GL/glcorearb.h");
-    @cInclude("GL/glext.h");
+    switch (builtin.os.tag) {
+        .macos => {
+            @cInclude("OpenGL/gl3.h");
+            @cInclude("OpenGL/gl3ext.h");
+        },
+        else => {
+            @cInclude("GL/glcorearb.h");
+            @cInclude("GL/glext.h");
+        },
+    }
 });
 
 const Shaders = @import("shaders.zig");
