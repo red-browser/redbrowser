@@ -16,3 +16,9 @@
 !shaders/*.vert
 !shaders/*.zig
 
+
+!main.zig
+!engine/
+!engine/*.zig
+!browser/
+!browser/*.zig

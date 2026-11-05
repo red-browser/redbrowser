@@ -24,3 +24,17 @@
 !flake.lock
 !build.zig.zon
 !build.zig.zon.nix
+
+!run.sh
+!engine/
+!engine/Cargo.toml
+!engine/Cargo.lock
+!engine/src/
+!engine/src/*.rs
+!tools/
+!tools/*.swift
+!assets/
+!assets/*.png
+!assets/fonts/
+!assets/fonts/*.ttf
+!assets/fonts/OFL.txt
