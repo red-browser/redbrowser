@@ -53,6 +53,9 @@ Darwin)
     # 4. App bundle so the Dock / Cmd-Tab / Finder show the icon.
     APP="zig-out/Red Browser.app"
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+    # Replace (not overwrite) the binary: macOS caches code signatures per file
+    # and SIGKILLs a signed executable whose bytes changed in place.
+    rm -f "$APP/Contents/MacOS/redbrowser"
     cp zig-out/bin/redbrowser "$APP/Contents/MacOS/redbrowser"
     if [[ ! -f assets/AppIcon.png || brand/png/R.png -nt assets/AppIcon.png ]]; then
         swift tools/make_icon.swift brand/png/R.png assets/AppIcon.png
@@ -83,6 +86,7 @@ Darwin)
   <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict></plist>
 PLIST
+    codesign --force --sign - "$APP" >/dev/null 2>&1 || true
     touch "$APP"
     RUN_BIN="$APP/Contents/MacOS/redbrowser"
     ;;

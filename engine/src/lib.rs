@@ -820,7 +820,16 @@ fn flatten(handle: &Handle, parent: i32, out: &mut Vec<FlatNode>) -> i32 {
 #[no_mangle]
 pub extern "C" fn re_html_parse(input: *const u8, len: usize) -> *mut Doc {
     let src = String::from_utf8_lossy(unsafe { bytes(input, len) }).into_owned();
-    let dom = html5ever::parse_document(RcDom::default(), Default::default())
+    // No script engine yet, so parse the way a browser with scripting disabled
+    // does: <noscript> content becomes real markup and is shown.
+    let opts = html5ever::ParseOpts {
+        tree_builder: html5ever::tree_builder::TreeBuilderOpts {
+            scripting_enabled: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let dom = html5ever::parse_document(RcDom::default(), opts)
         .from_utf8()
         .read_from(&mut src.as_bytes())
         .unwrap_or_default();

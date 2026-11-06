@@ -1,18 +1,18 @@
 //! Computed style: user-agent defaults per tag, inheritance, legacy presentational
-//! attributes, and inline `style="..."` declarations.
-//!
-//! Author stylesheets (<style>, <link rel=stylesheet>) are not applied yet; that is
-//! where Stylo/cssparser will plug in later.
+//! attributes, author stylesheets (see cascade.zig) and inline `style="..."`.
 
 const std = @import("std");
 const gfx = @import("gfx.zig");
 const dom = @import("dom.zig");
+const cascade = @import("cascade.zig");
 
 pub const Color = gfx.Color;
 
 pub const Display = enum { block, inline_, inline_block, list_item, none, table, table_row, table_cell };
 pub const Align = enum { left, center, right };
 pub const ListStyle = enum { none, disc, circle, square, decimal };
+pub const Justify = enum { start, center, end, space_between, space_around };
+pub const Position = enum { static, relative, absolute, fixed, sticky };
 
 pub const Edges = struct {
     top: f32 = 0,
@@ -35,6 +35,10 @@ pub const Style = struct {
     strike: bool = false,
     list_style: ListStyle = .disc,
     line_height: f32 = 1.25,
+    /// visibility:hidden / opacity:0 — laid out but not painted.
+    hidden: bool = false,
+    /// Custom properties in scope.
+    vars: ?*const cascade.Vars = null,
     // not inherited
     background: ?Color = null,
     margin: Edges = .{},
@@ -46,7 +50,34 @@ pub const Style = struct {
     radius: f32 = 0,
     width: ?f32 = null,
     max_width: ?f32 = null,
-    hidden: bool = false,
+    /// Percentage widths (0..1 of the containing block).
+    width_pct: ?f32 = null,
+    max_width_pct: ?f32 = null,
+    height: ?f32 = null,
+    position: Position = .static,
+    offset_left: ?f32 = null,
+    offset_top: ?f32 = null,
+    overflow_hidden: bool = false,
+    clipped: bool = false,
+    // flexbox (row direction only; column flex is plain block flow)
+    flex: bool = false,
+    flex_column: bool = false,
+    flex_wrap: bool = false,
+    flex_grow: f32 = 0,
+    gap_x: f32 = 0,
+    gap_y: f32 = 0,
+    justify: Justify = .start,
+    align_center: bool = false,
+    // grid (raw values; parsed by layout)
+    grid: bool = false,
+    grid_columns: []const u8 = "",
+    grid_areas: []const u8 = "",
+    grid_area: []const u8 = "",
+    grid_column: []const u8 = "",
+
+    pub fn flexRow(self: *const Style) bool {
+        return self.flex and !self.flex_column;
+    }
 
     pub fn font(self: *const Style) gfx.Font {
         return gfx.Font.pick(self.mono, self.bold, self.italic);
@@ -66,6 +97,8 @@ pub const Style = struct {
             .strike = parent.strike,
             .list_style = parent.list_style,
             .line_height = parent.line_height,
+            .hidden = parent.hidden,
+            .vars = parent.vars,
         };
     }
 };
@@ -83,7 +116,7 @@ fn anyOf(tag: []const u8, comptime list: []const []const u8) bool {
     return false;
 }
 
-const hidden_tags = [_][]const u8{ "head", "script", "style", "title", "meta", "link", "template", "noscript", "svg", "iframe", "object", "embed", "canvas", "video", "audio", "map", "area", "datalist", "dialog" };
+const hidden_tags = [_][]const u8{ "head", "script", "style", "title", "meta", "link", "template", "svg", "iframe", "object", "embed", "canvas", "video", "audio", "map", "area", "datalist", "dialog" };
 const block_tags = [_][]const u8{ "html", "body", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "dl", "dt", "dd", "pre", "blockquote", "hr", "address", "article", "aside", "footer", "header", "main", "nav", "section", "figure", "figcaption", "form", "fieldset", "legend", "details", "summary", "center", "menu", "caption", "hgroup", "search", "tbody", "thead", "tfoot", "picture" };
 
 /// Compute the style of element `node` given its parent's computed style.
@@ -225,11 +258,67 @@ pub fn compute(doc: *const dom.Document, node: *const dom.Node, parent: *const S
         s.text_align = .left;
     }
 
-    // --- inline style="" --------------------------------------------------
-    if (node.attr("style")) |decls| applyDeclarations(&s, parent, decls);
+    // --- author stylesheets + inline style="" --------------------------------
+    if (doc.sheet) |sheet| {
+        applyAuthor(&s, parent, sheet, doc, node);
+    } else if (node.attr("style")) |decls| applyDeclarations(&s, parent, decls);
 
-    _ = doc;
+    // Common "visually hidden" / off-screen patterns. Without real positioning
+    // these would otherwise show up as stray text in the flow.
+    if (s.position == .absolute or s.position == .fixed) {
+        if ((s.offset_left orelse 0) <= -500 or (s.offset_top orelse 0) <= -500 or s.clipped) s.display = .none;
+        // Out-of-flow and invisible (closed dropdowns, tooltips): takes no space.
+        if (s.hidden and !parent.hidden) s.display = .none;
+    }
+    if (s.width != null and s.height != null and s.width.? <= 1 and s.height.? <= 1) s.display = .none;
+    if (s.overflow_hidden and s.height != null and s.height.? < 1) s.display = .none;
     return s;
+}
+
+/// Matched author rules then inline declarations, normal before `!important`,
+/// with custom properties collected first so `var()` sees this element's values.
+fn applyAuthor(s: *Style, parent: *const Style, sheet: *cascade.Sheet, doc: *const dom.Document, node: *const dom.Node) void {
+    const a = sheet.scratchAllocator();
+    const rules = sheet.matching(doc, doc.indexOf(node));
+    var inline_decls = std.ArrayListUnmanaged(cascade.Decl){};
+    if (node.attr("style")) |st| cascade.parseDecls(a, st, &inline_decls) catch {};
+    if (rules.len == 0 and inline_decls.items.len == 0) return;
+
+    var names = std.ArrayListUnmanaged([]const u8){};
+    var values = std.ArrayListUnmanaged([]const u8){};
+    for ([_]bool{ false, true }) |important| {
+        for (rules) |r| for (r.decls) |d| {
+            if (d.important == important and std.mem.startsWith(u8, d.prop, "--")) {
+                names.append(a, d.prop) catch return;
+                values.append(a, d.val) catch return;
+            }
+        };
+        for (inline_decls.items) |d| {
+            if (d.important == important and std.mem.startsWith(u8, d.prop, "--")) {
+                names.append(a, d.prop) catch return;
+                values.append(a, d.val) catch return;
+            }
+        }
+    }
+    if (names.items.len > 0) {
+        const scope = a.create(cascade.Vars) catch return;
+        scope.* = .{ .parent = s.vars, .names = names.items, .values = values.items };
+        s.vars = scope;
+    }
+
+    for ([_]bool{ false, true }) |important| {
+        for (rules) |r| for (r.decls) |d| {
+            if (d.important == important and !std.mem.startsWith(u8, d.prop, "--")) applyValue(s, parent, a, d.prop, d.val);
+        };
+        for (inline_decls.items) |d| {
+            if (d.important == important and !std.mem.startsWith(u8, d.prop, "--")) applyValue(s, parent, a, d.prop, d.val);
+        }
+    }
+}
+
+fn applyValue(s: *Style, parent: *const Style, a: std.mem.Allocator, prop: []const u8, val: []const u8) void {
+    const v = cascade.substitute(a, val, s.vars) orelse return;
+    applyOne(s, parent, prop, std.mem.trim(u8, v, " \t\r\n"));
 }
 
 /// Apply `prop: value; ...` declarations.
@@ -247,9 +336,69 @@ pub fn applyDeclarations(s: *Style, parent: *const Style, decls: []const u8) voi
 fn applyOne(s: *Style, parent: *const Style, prop: []const u8, val: []const u8) void {
     const em = parent.font_size;
     if (eq(prop, "display")) {
-        if (eq(val, "none")) s.display = .none else if (eq(val, "block") or eq(val, "flex") or eq(val, "grid")) s.display = .block else if (eq(val, "inline")) s.display = .inline_ else if (eq(val, "inline-block") or eq(val, "inline-flex")) s.display = .inline_block else if (eq(val, "list-item")) s.display = .list_item;
+        s.flex = eq(val, "flex") or eq(val, "inline-flex") or eq(val, "block flex") or eq(val, "inline flex");
+        s.grid = eq(val, "grid") or eq(val, "inline-grid");
+        if (eq(val, "none")) s.display = .none else if (eq(val, "block") or eq(val, "flex") or eq(val, "grid") or eq(val, "flow-root") or eq(val, "block flex") or eq(val, "block flow")) s.display = .block else if (eq(val, "inline") or eq(val, "contents")) s.display = .inline_ else if (eq(val, "inline-block") or eq(val, "inline-flex") or eq(val, "inline-grid")) s.display = .inline_block else if (eq(val, "list-item")) s.display = .list_item else if (eq(val, "table")) s.display = .table else if (eq(val, "table-row")) s.display = .table_row else if (eq(val, "table-cell")) s.display = .table_cell;
+    } else if (eq(prop, "grid-template-columns")) {
+        s.grid_columns = val;
+    } else if (eq(prop, "grid-template-areas")) {
+        s.grid_areas = val;
+    } else if (eq(prop, "grid-template")) {
+        // `rows / columns` or `"areas" rows / columns`
+        if (std.mem.lastIndexOfScalar(u8, val, '/')) |slash| s.grid_columns = std.mem.trim(u8, val[slash + 1 ..], " ");
+        if (std.mem.indexOfScalar(u8, val, '"') != null or std.mem.indexOfScalar(u8, val, '\'') != null) s.grid_areas = val;
+    } else if (eq(prop, "grid-area")) {
+        s.grid_area = val;
+    } else if (eq(prop, "grid-column")) {
+        s.grid_column = val;
+    } else if (eq(prop, "flex-direction")) {
+        s.flex_column = std.ascii.startsWithIgnoreCase(val, "column");
+    } else if (eq(prop, "flex-wrap")) {
+        s.flex_wrap = !eq(val, "nowrap");
+    } else if (eq(prop, "flex-flow")) {
+        s.flex_column = std.ascii.indexOfIgnoreCase(val, "column") != null;
+        s.flex_wrap = std.ascii.indexOfIgnoreCase(val, "wrap") != null and std.ascii.indexOfIgnoreCase(val, "nowrap") == null;
+    } else if (eq(prop, "flex-grow")) {
+        s.flex_grow = std.fmt.parseFloat(f32, val) catch s.flex_grow;
+    } else if (eq(prop, "flex")) {
+        var parts = std.mem.tokenizeScalar(u8, val, ' ');
+        const first = parts.next() orelse "";
+        if (eq(first, "auto")) s.flex_grow = 1 else if (eq(first, "none")) s.flex_grow = 0 else s.flex_grow = std.fmt.parseFloat(f32, first) catch s.flex_grow;
+    } else if (eq(prop, "gap") or eq(prop, "grid-gap")) {
+        var parts = std.mem.tokenizeScalar(u8, val, ' ');
+        const r = parseLength(parts.next() orelse "", s.font_size, 0) orelse 0;
+        s.gap_y = r;
+        s.gap_x = if (parts.next()) |c| parseLength(c, s.font_size, 0) orelse r else r;
+    } else if (eq(prop, "column-gap")) {
+        s.gap_x = parseLength(val, s.font_size, 0) orelse s.gap_x;
+    } else if (eq(prop, "row-gap")) {
+        s.gap_y = parseLength(val, s.font_size, 0) orelse s.gap_y;
+    } else if (eq(prop, "justify-content")) {
+        s.justify = if (eq(val, "center")) .center else if (eq(val, "flex-end") or eq(val, "end") or eq(val, "right")) .end else if (eq(val, "space-between")) .space_between else if (eq(val, "space-around") or eq(val, "space-evenly")) .space_around else .start;
+    } else if (eq(prop, "align-items")) {
+        s.align_center = eq(val, "center");
     } else if (eq(prop, "visibility")) {
-        s.hidden = eq(val, "hidden");
+        s.hidden = eq(val, "hidden") or eq(val, "collapse");
+    } else if (eq(prop, "opacity")) {
+        if (std.fmt.parseFloat(f32, val) catch null) |o| {
+            if (o <= 0.01) s.hidden = true;
+        }
+    } else if (eq(prop, "position")) {
+        inline for (@typeInfo(Position).@"enum".fields) |f| {
+            if (eq(val, f.name)) s.position = @enumFromInt(f.value);
+        }
+    } else if (eq(prop, "left") or eq(prop, "right")) {
+        if (parseLength(val, s.font_size, 0)) |v| s.offset_left = @min(v, s.offset_left orelse v);
+    } else if (eq(prop, "top")) {
+        if (parseLength(val, s.font_size, 0)) |v| s.offset_top = v;
+    } else if (eq(prop, "overflow") or eq(prop, "overflow-y") or eq(prop, "overflow-x")) {
+        s.overflow_hidden = eq(val, "hidden") or eq(val, "clip");
+    } else if (eq(prop, "clip")) {
+        s.clipped = std.mem.indexOf(u8, val, "rect(0") != null or std.mem.indexOf(u8, val, "rect(1px") != null;
+    } else if (eq(prop, "clip-path")) {
+        s.clipped = std.mem.indexOf(u8, val, "inset(50%") != null or std.mem.indexOf(u8, val, "inset(100%") != null;
+    } else if (eq(prop, "height")) {
+        if (!std.mem.endsWith(u8, val, "%")) s.height = parseLength(val, s.font_size, 0);
     } else if (eq(prop, "color")) {
         if (parseColor(val)) |c| s.color = c;
     } else if (eq(prop, "background-color") or eq(prop, "background")) {
@@ -305,10 +454,35 @@ fn applyOne(s: *Style, parent: *const Style, prop: []const u8, val: []const u8) 
     } else if (eq(prop, "border-radius")) {
         if (parseLength(val, s.font_size, 0)) |v| s.radius = v;
     } else if (eq(prop, "width")) {
-        if (parseLength(val, s.font_size, 0)) |v| s.width = v;
+        if (pct(val)) |p| {
+            s.width_pct = p;
+            s.width = null;
+        } else if (parseLength(val, s.font_size, 0)) |v| {
+            s.width = v;
+            s.width_pct = null;
+        } else if (eq(val, "auto")) {
+            s.width = null;
+            s.width_pct = null;
+        }
     } else if (eq(prop, "max-width")) {
-        if (parseLength(val, s.font_size, 0)) |v| s.max_width = v;
+        if (pct(val)) |p| {
+            s.max_width_pct = p;
+            s.max_width = null;
+        } else if (parseLength(val, s.font_size, 0)) |v| {
+            s.max_width = v;
+            s.max_width_pct = null;
+        } else if (eq(val, "none")) {
+            s.max_width = null;
+            s.max_width_pct = null;
+        }
     }
+}
+
+/// `NN%` → 0..1
+fn pct(val: []const u8) ?f32 {
+    if (!std.mem.endsWith(u8, val, "%")) return null;
+    const n = std.fmt.parseFloat(f32, std.mem.trim(u8, val[0 .. val.len - 1], " ")) catch return null;
+    return n / 100;
 }
 
 fn setEdge(e: *Edges, side: []const u8, v: f32) void {
@@ -343,8 +517,8 @@ pub fn parseLength(val: []const u8, em: f32, percent_base: f32) ?f32 {
         .{ .s = "em", .k = 1, .rel = .em },
         .{ .s = "pt", .k = 4.0 / 3.0, .rel = .abs },
         .{ .s = "%", .k = 0.01, .rel = .pct },
-        .{ .s = "vh", .k = 0, .rel = .abs },
-        .{ .s = "vw", .k = 0, .rel = .abs },
+        .{ .s = "vh", .k = 8, .rel = .abs },
+        .{ .s = "vw", .k = 12.8, .rel = .abs },
     };
     for (units) |u| {
         if (std.ascii.endsWithIgnoreCase(v, u.s)) {

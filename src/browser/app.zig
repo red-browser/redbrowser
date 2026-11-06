@@ -101,7 +101,9 @@ pub const App = struct {
 
         // Borderless: we draw our own title bar + window controls so the browser
         // looks identical on macOS, Linux and Windows.
-        const flags = c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_BORDERLESS | c.SDL_WINDOW_TRANSPARENT;
+        var flags = c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | c.SDL_WINDOW_BORDERLESS | c.SDL_WINDOW_TRANSPARENT;
+        // Screenshot runs are automated: never take keyboard focus from the user.
+        if (opts.screenshot_path != null) flags |= c.SDL_WINDOW_NOT_FOCUSABLE;
         const window = c.SDL_CreateWindow("Red Browser", 1280, 800, flags) orelse {
             std.log.err("SDL_CreateWindow: {s}", .{c.SDL_GetError()});
             return error.WindowCreationFailed;
@@ -879,6 +881,7 @@ pub const App = struct {
             // Page fills the whole window and scrolls *under* the chrome.
             g.rect(0, 0, self.win_w, self.win_h, p.background);
             p.paint(g, 0, top - t.view_scroll, self.win_h, t.view_scroll - top);
+            if (p.needs_script) ui.drawScriptNotice(g, self.win_w, top, self.win_h, urlz.host(t.url));
         } else {
             g.rect(0, 0, self.win_w, self.win_h, ui.pal.page_bg);
         }

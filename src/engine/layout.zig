@@ -50,6 +50,9 @@ pub const Page = struct {
     width: f32 = 0,
     height: f32 = 0,
     background: Color = gfx.hex(0xffffff),
+    /// Nothing visible was produced but the page ships scripts: it is built
+    /// client-side by JavaScript, which this engine doesn't run.
+    needs_script: bool = false,
 
     pub fn deinit(self: *Page) void {
         self.arena.deinit();
@@ -302,6 +305,7 @@ pub fn layoutDocument(allocator: std.mem.Allocator, g: *const gfx.Gfx, doc: *con
     var page = Page{ .arena = std.heap.ArenaAllocator.init(allocator), .width = width };
     errdefer page.deinit();
     var ctx = Ctx{ .g = g, .doc = doc, .a = page.arena.allocator(), .page = &page };
+    if (doc.sheet) |sheet| sheet.beginLayout(width, 800);
 
     const root_style = try ctx.a.create(Style);
     root_style.* = .{ .display = .block };
@@ -319,6 +323,14 @@ pub fn layoutDocument(allocator: std.mem.Allocator, g: *const gfx.Gfx, doc: *con
     while (it.next()) |c| try layoutNode(&ctx, &flow, c, root_style, null);
     try flow.flushLine(false);
     page.height = flow.y + flow.pending_margin;
+    var has_text = false;
+    for (page.items.items) |item| {
+        if (item == .text) {
+            has_text = true;
+            break;
+        }
+    }
+    if (!has_text) page.needs_script = doc.find("script") != null;
     return page;
 }
 
@@ -478,11 +490,14 @@ fn layoutBlock(ctx: *Ctx, flow: *Flow, idx: u32, s: *Style, href: ?[]const u8) a
     var w = flow.width - s.margin.left - s.margin.right;
     if (s.width) |cw| w = @min(w, cw + horiz_extra);
     if (s.max_width) |mw| w = @min(w, mw + horiz_extra);
+    const avail = flow.width;
+    if (s.width_pct) |p| w = @min(w, avail * p);
+    if (s.max_width_pct) |p| w = @min(w, avail * p);
     w = @max(w, 0);
     var x = flow.x0 + s.margin.left;
     if (s.margin_auto and w < flow.width) x = flow.x0 + @round((flow.width - w) / 2);
 
-    const has_bg = s.background != null;
+    const has_bg = s.background != null and !s.hidden;
     const bg_slot = if (has_bg) try ctx.slot() else 0;
     const y0 = flow.y;
     const cx = x + bw + s.padding.left;
@@ -495,6 +510,10 @@ fn layoutBlock(ctx: *Ctx, flow: *Flow, idx: u32, s: *Style, href: ?[]const u8) a
         h = 1;
     } else if (s.display == .table) {
         h = try layoutTable(ctx, idx, s, cx, cw, cy, href);
+    } else if (s.flexRow()) {
+        h = try layoutFlexRow(ctx, idx, s, cx, cw, cy, href);
+    } else if (s.grid and s.grid_columns.len > 0) {
+        h = try layoutGrid(ctx, idx, s, cx, cw, cy, href);
     } else {
         if (s.display == .list_item) {
             ctx.marker = .{ .x = cx, .text = try markerText(ctx, flow, s), .style = s };
@@ -505,7 +524,7 @@ fn layoutBlock(ctx: *Ctx, flow: *Flow, idx: u32, s: *Style, href: ?[]const u8) a
 
     const total = h + 2 * bw + s.padding.top + s.padding.bottom;
     if (has_bg) ctx.page.items.items[bg_slot] = .{ .rect = .{ .x = x, .y = y0, .w = w, .h = total, .color = s.background.?, .radius = s.radius } };
-    if (bw > 0 and !node.is("hr")) try ctx.item(.{ .border = .{ .x = x, .y = y0, .w = w, .h = total, .width = bw, .radius = s.radius, .color = s.border_color } });
+    if (bw > 0 and !s.hidden and !node.is("hr")) try ctx.item(.{ .border = .{ .x = x, .y = y0, .w = w, .h = total, .width = bw, .radius = s.radius, .color = s.border_color } });
 
     flow.y = y0 + total;
     flow.pending_margin = s.margin.bottom;
@@ -540,6 +559,360 @@ fn layoutChildren(ctx: *Ctx, idx: u32, s: *const Style, x: f32, w: f32, y: f32, 
     }
     try flow.flushLine(false);
     return flow.y + flow.pending_margin - y;
+}
+
+// ---------------------------------------------------------------------------
+// Flexbox (row direction)
+// ---------------------------------------------------------------------------
+
+const FlexItem = struct { node: u32, style: *Style, w: f32, min: f32, grow: f32 };
+
+/// Preferred (max-content) and minimum widths of an element's margin box.
+fn itemWidths(ctx: *Ctx, idx: u32, s: *Style, avail: f32) !struct { pref: f32, min: f32 } {
+    const n = ctx.doc.get(idx);
+    const extra = s.padding.left + s.padding.right + s.margin.left + s.margin.right + 2 * s.border_width;
+    if (n.kind == .text) {
+        var acc = Intrinsic{};
+        var words = std.mem.tokenizeAny(u8, n.text, " \t\r\n");
+        const space = ctx.g.measure(s.font(), s.font_size, " ");
+        while (words.next()) |wd| {
+            const ww = ctx.g.measure(s.font(), s.font_size, wd);
+            acc.min = @max(acc.min, ww);
+            acc.cur += ww + space;
+        }
+        return .{ .pref = @max(0, acc.cur - space), .min = acc.min };
+    }
+    if (s.width) |w| return .{ .pref = w + extra, .min = w + extra };
+    if (s.width_pct) |p| return .{ .pref = avail * p, .min = avail * p };
+    if (n.is("img") or n.is("input") or n.is("textarea") or n.is("button") or n.is("select")) {
+        const w = attrNum(n, "width") orelse (if (n.is("button")) @as(f32, 80) else 160);
+        return .{ .pref = w + extra, .min = w + extra };
+    }
+    var acc = Intrinsic{};
+    try intrinsic(ctx, idx, s, &acc, 0);
+    var pref = @max(acc.pref, acc.cur) + extra;
+    if (s.max_width) |mw| pref = @min(pref, mw + extra);
+    return .{ .pref = pref, .min = acc.min + extra };
+}
+
+fn layoutFlexRow(ctx: *Ctx, idx: u32, s: *const Style, x: f32, w: f32, y: f32, href: ?[]const u8) anyerror!f32 {
+    var items = std.ArrayListUnmanaged(FlexItem){};
+    var it = ctx.doc.children(idx);
+    while (it.next()) |c| {
+        const n = ctx.doc.get(c);
+        const cs = try ctx.a.create(Style);
+        switch (n.kind) {
+            .element => {
+                cs.* = css.compute(ctx.doc, n, s);
+                if (cs.display == .none) continue;
+            },
+            .text => {
+                if (std.mem.trim(u8, n.text, " \t\r\n").len == 0) continue;
+                cs.* = Style.inherit(s);
+            },
+            else => continue,
+        }
+        const iw = try itemWidths(ctx, c, cs, w);
+        try items.append(ctx.a, .{ .node = c, .style = cs, .w = @min(iw.pref, w), .min = @min(iw.min, w), .grow = cs.flex_grow });
+    }
+    if (items.items.len == 0) return 0;
+
+    var line_y = y;
+    var start: usize = 0;
+    while (start < items.items.len) {
+        // Pick the items on this line.
+        var end = start;
+        var used: f32 = 0;
+        while (end < items.items.len) : (end += 1) {
+            const add = items.items[end].w + (if (end > start) s.gap_x else 0);
+            if (s.flex_wrap and end > start and used + add > w) break;
+            used += add;
+        }
+        const line = items.items[start..end];
+        // Shrink (nowrap overflow) or grow to fill.
+        if (used > w) {
+            var shrinkable: f32 = 0;
+            for (line) |i| shrinkable += i.w - i.min;
+            const over = used - w;
+            if (shrinkable > 0) {
+                const k = @min(1, over / shrinkable);
+                for (line) |*i| i.w -= (i.w - i.min) * k;
+            }
+            used = 0;
+            for (line, 0..) |i, k| used += i.w + (if (k > 0) s.gap_x else 0);
+        } else {
+            var grow: f32 = 0;
+            for (line) |i| grow += i.grow;
+            if (grow > 0) {
+                const free = w - used;
+                for (line) |*i| i.w += free * i.grow / grow;
+                used = w;
+            }
+        }
+        const free = @max(0, w - used);
+        var gap = s.gap_x;
+        var cursor = x;
+        switch (s.justify) {
+            .start => {},
+            .center => cursor += @round(free / 2),
+            .end => cursor += free,
+            .space_between => if (line.len > 1) {
+                gap += free / @as(f32, @floatFromInt(line.len - 1));
+            },
+            .space_around => {
+                const k = free / @as(f32, @floatFromInt(line.len));
+                cursor += k / 2;
+                gap += k;
+            },
+        }
+
+        // Lay out each item in its own column, remembering its paint range.
+        var line_h: f32 = 0;
+        const Range = struct { items: usize, links: usize, h: f32 };
+        var ranges = try ctx.a.alloc(Range, line.len);
+        for (line, 0..) |item, k| {
+            ranges[k] = .{ .items = ctx.page.items.items.len, .links = ctx.page.links.items.len, .h = 0 };
+            var flow = Flow{ .ctx = ctx, .x0 = @round(cursor), .width = item.w, .y = line_y, .text_align = item.style.text_align, .last_style = item.style };
+            try layoutNode(ctx, &flow, item.node, s, href);
+            try flow.flushLine(false);
+            const h = flow.y + flow.pending_margin - line_y;
+            ranges[k].h = h;
+            line_h = @max(line_h, h);
+            cursor += item.w + gap;
+        }
+        if (s.align_center) {
+            for (ranges, 0..) |r, k| {
+                const dy = @round((line_h - r.h) / 2);
+                if (dy <= 0) continue;
+                const item_end = if (k + 1 < ranges.len) ranges[k + 1].items else ctx.page.items.items.len;
+                const link_end = if (k + 1 < ranges.len) ranges[k + 1].links else ctx.page.links.items.len;
+                for (ctx.page.items.items[r.items..item_end]) |*pi| pi.shift(dy);
+                for (ctx.page.links.items[r.links..link_end]) |*l| l.y += dy;
+            }
+        }
+        line_y += line_h;
+        start = end;
+        if (start < items.items.len) line_y += s.gap_y;
+    }
+    return line_y - y;
+}
+
+// ---------------------------------------------------------------------------
+// Grid: explicit columns, named areas, auto-placement in row-major order
+// ---------------------------------------------------------------------------
+
+const Track = struct { px: f32 = 0, fr: f32 = 0 };
+
+/// Split on top-level whitespace (outside parentheses and quotes).
+fn splitTopLevel(a: std.mem.Allocator, v: []const u8) ![]const []const u8 {
+    var out = std.ArrayListUnmanaged([]const u8){};
+    var depth: i32 = 0;
+    var start: ?usize = null;
+    for (v, 0..) |ch, i| {
+        if (ch == '(') depth += 1;
+        if (ch == ')') depth -= 1;
+        const ws = std.ascii.isWhitespace(ch) and depth == 0;
+        if (ws) {
+            if (start) |st| try out.append(a, v[st..i]);
+            start = null;
+        } else if (start == null) start = i;
+    }
+    if (start) |st| try out.append(a, v[st..]);
+    return out.items;
+}
+
+fn parseTrack(t: []const u8, em: f32, avail: f32) Track {
+    if (std.mem.endsWith(u8, t, "fr")) return .{ .fr = std.fmt.parseFloat(f32, t[0 .. t.len - 2]) catch 1 };
+    if (std.mem.startsWith(u8, t, "minmax(") and std.mem.endsWith(u8, t, ")")) {
+        const inner = t[7 .. t.len - 1];
+        const comma = std.mem.indexOfScalar(u8, inner, ',') orelse return .{ .fr = 1 };
+        const hi = std.mem.trim(u8, inner[comma + 1 ..], " ");
+        const lo = std.mem.trim(u8, inner[0..comma], " ");
+        if (std.mem.endsWith(u8, hi, "fr") or std.mem.eql(u8, hi, "auto")) return parseTrack(if (std.mem.eql(u8, hi, "auto")) "1fr" else hi, em, avail);
+        return .{ .px = css.parseLength(hi, em, avail) orelse css.parseLength(lo, em, avail) orelse 0 };
+    }
+    if (std.mem.eql(u8, t, "auto") or std.mem.eql(u8, t, "min-content") or std.mem.eql(u8, t, "max-content") or std.mem.startsWith(u8, t, "fit-content")) return .{ .fr = 1 };
+    return .{ .px = css.parseLength(t, em, avail) orelse 0 };
+}
+
+fn gridTracks(a: std.mem.Allocator, s: *const Style, avail: f32) ![]f32 {
+    var tracks = std.ArrayListUnmanaged(Track){};
+    for (try splitTopLevel(a, s.grid_columns)) |tok| {
+        if (tok.len > 0 and tok[0] == '[') continue; // line names
+        if (std.mem.startsWith(u8, tok, "repeat(") and std.mem.endsWith(u8, tok, ")")) {
+            const inner = tok[7 .. tok.len - 1];
+            const comma = std.mem.indexOfScalar(u8, inner, ',') orelse continue;
+            const count_s = std.mem.trim(u8, inner[0..comma], " ");
+            const pattern = try splitTopLevel(a, std.mem.trim(u8, inner[comma + 1 ..], " "));
+            var n: usize = std.fmt.parseInt(usize, count_s, 10) catch 0;
+            if (n == 0) {
+                // auto-fill / auto-fit: as many as fit at the minimum size
+                var min_w: f32 = 0;
+                for (pattern) |p| {
+                    const lo = if (std.mem.startsWith(u8, p, "minmax(")) std.mem.trim(u8, p[7 .. std.mem.indexOfScalar(u8, p, ',') orelse p.len], " ") else p;
+                    min_w += css.parseLength(lo, s.font_size, avail) orelse 100;
+                }
+                n = @intFromFloat(@max(1, @floor((avail + s.gap_x) / @max(1, min_w + s.gap_x))));
+            }
+            for (0..@min(n, 64)) |_| for (pattern) |p| try tracks.append(a, if (std.mem.startsWith(u8, p, "minmax(") and count_s.len > 0 and !std.ascii.isDigit(count_s[0])) Track{ .fr = 1 } else parseTrack(p, s.font_size, avail));
+            continue;
+        }
+        try tracks.append(a, parseTrack(tok, s.font_size, avail));
+    }
+    if (tracks.items.len == 0) try tracks.append(a, .{ .fr = 1 });
+    const n: f32 = @floatFromInt(tracks.items.len);
+    var fixed: f32 = s.gap_x * (n - 1);
+    var frs: f32 = 0;
+    for (tracks.items) |t| {
+        fixed += t.px;
+        frs += t.fr;
+    }
+    const free = @max(0, avail - fixed);
+    const widths = try a.alloc(f32, tracks.items.len);
+    for (tracks.items, widths) |t, *w| w.* = t.px + (if (frs > 0) free * t.fr / frs else 0);
+    return widths;
+}
+
+const Area = struct { name: []const u8, r0: usize, c0: usize, r1: usize, c1: usize };
+
+fn gridAreas(a: std.mem.Allocator, v: []const u8) ![]Area {
+    var areas = std.ArrayListUnmanaged(Area){};
+    var row: usize = 0;
+    var i: usize = 0;
+    while (i < v.len) : (i += 1) {
+        const q = v[i];
+        if (q != '"' and q != '\'') continue;
+        const end = std.mem.indexOfScalarPos(u8, v, i + 1, q) orelse break;
+        var col: usize = 0;
+        var cells = std.mem.tokenizeAny(u8, v[i + 1 .. end], " \t\r\n");
+        while (cells.next()) |name| : (col += 1) {
+            if (std.mem.eql(u8, name, ".")) continue;
+            for (areas.items) |*ar| {
+                if (std.mem.eql(u8, ar.name, name)) {
+                    ar.r1 = @max(ar.r1, row + 1);
+                    ar.c1 = @max(ar.c1, col + 1);
+                    ar.c0 = @min(ar.c0, col);
+                    break;
+                }
+            } else try areas.append(a, .{ .name = name, .r0 = row, .c0 = col, .r1 = row + 1, .c1 = col + 1 });
+        }
+        row += 1;
+        i = end;
+    }
+    return areas.items;
+}
+
+const GridItem = struct { node: u32, style: *Style, r0: usize, c0: usize, r1: usize, c1: usize };
+
+fn layoutGrid(ctx: *Ctx, idx: u32, s: *const Style, x: f32, w: f32, y: f32, href: ?[]const u8) anyerror!f32 {
+    const a = ctx.a;
+    const cols = try gridTracks(a, s, w);
+    const ncols = cols.len;
+    const areas = try gridAreas(a, s.grid_areas);
+
+    var items = std.ArrayListUnmanaged(GridItem){};
+    // occupancy for auto-placement
+    var taken = std.AutoHashMapUnmanaged(u64, void){};
+    var cur_r: usize = 0;
+    var cur_c: usize = 0;
+    var it = ctx.doc.children(idx);
+    while (it.next()) |c| {
+        const n = ctx.doc.get(c);
+        const cs = try a.create(Style);
+        switch (n.kind) {
+            .element => {
+                cs.* = css.compute(ctx.doc, n, s);
+                if (cs.display == .none) continue;
+            },
+            .text => {
+                if (std.mem.trim(u8, n.text, " \t\r\n").len == 0) continue;
+                cs.* = Style.inherit(s);
+            },
+            else => continue,
+        }
+        var item = GridItem{ .node = c, .style = cs, .r0 = 0, .c0 = 0, .r1 = 1, .c1 = 1 };
+        var placed = false;
+        if (cs.grid_area.len > 0) {
+            for (areas) |ar| if (std.mem.eql(u8, ar.name, std.mem.trim(u8, cs.grid_area, " "))) {
+                item.r0 = ar.r0;
+                item.c0 = @min(ar.c0, ncols - 1);
+                item.r1 = ar.r1;
+                item.c1 = @min(ar.c1, ncols);
+                placed = true;
+            };
+        }
+        var span: usize = 1;
+        if (!placed and cs.grid_column.len > 0) {
+            const gc = cs.grid_column;
+            if (std.mem.indexOf(u8, gc, "-1") != null and std.mem.indexOfScalar(u8, gc, '/') != null) {
+                span = ncols;
+            } else if (std.mem.indexOf(u8, gc, "span")) |sp| {
+                span = std.fmt.parseInt(usize, std.mem.trim(u8, gc[sp + 4 ..], " "), 10) catch 1;
+            }
+            span = std.math.clamp(span, 1, ncols);
+        }
+        if (!placed) {
+            // next free run of `span` cells
+            while (true) {
+                if (cur_c + span > ncols) {
+                    cur_c = 0;
+                    cur_r += 1;
+                }
+                var free = true;
+                for (cur_c..cur_c + span) |cc| {
+                    if (taken.contains(cellKey(cur_r, cc))) free = false;
+                }
+                if (free) break;
+                cur_c += 1;
+            }
+            item.r0 = cur_r;
+            item.r1 = cur_r + 1;
+            item.c0 = cur_c;
+            item.c1 = cur_c + span;
+            cur_c += span;
+        }
+        for (item.r0..item.r1) |rr| for (item.c0..item.c1) |cc| try taken.put(a, cellKey(rr, cc), {});
+        try items.append(a, item);
+    }
+    if (items.items.len == 0) return 0;
+
+    var nrows: usize = 0;
+    for (items.items) |item| nrows = @max(nrows, item.r1);
+    std.sort.pdq(GridItem, items.items, {}, struct {
+        fn lt(_: void, p: GridItem, q: GridItem) bool {
+            return if (p.r0 != q.r0) p.r0 < q.r0 else p.c0 < q.c0;
+        }
+    }.lt);
+
+    const col_x = try a.alloc(f32, ncols + 1);
+    col_x[0] = x;
+    for (cols, 0..) |cw, i| col_x[i + 1] = col_x[i] + cw + s.gap_x;
+
+    const row_y = try a.alloc(f32, nrows + 1);
+    @memset(row_y, y);
+    // bottom edge required by items ending at each row
+    const need = try a.alloc(f32, nrows);
+    @memset(need, y);
+    var k: usize = 0;
+    for (0..nrows) |r| {
+        if (r > 0) row_y[r] = if (need[r - 1] > row_y[r - 1]) need[r - 1] + s.gap_y else row_y[r - 1];
+        need[r] = @max(need[r], row_y[r]);
+        while (k < items.items.len and items.items[k].r0 == r) : (k += 1) {
+            const item = items.items[k];
+            const ix = col_x[item.c0];
+            const iw = col_x[item.c1] - ix - s.gap_x;
+            var flow = Flow{ .ctx = ctx, .x0 = @round(ix), .width = @max(0, iw), .y = row_y[r], .text_align = item.style.text_align, .last_style = item.style };
+            try layoutNode(ctx, &flow, item.node, s, href);
+            try flow.flushLine(false);
+            const bottom = flow.y + flow.pending_margin;
+            need[item.r1 - 1] = @max(need[item.r1 - 1], bottom);
+        }
+    }
+    return need[nrows - 1] - y;
+}
+
+fn cellKey(r: usize, c: usize) u64 {
+    return (@as(u64, @intCast(r)) << 32) | @as(u64, @intCast(c));
 }
 
 // Ordered-list counter for the list currently being laid out (layout is single-threaded).
@@ -614,7 +987,7 @@ fn intrinsic(ctx: *Ctx, idx: u32, s: *const Style, acc: *Intrinsic, depth: u32) 
                 continue;
             }
             if (cs.width) |ww| acc.min = @max(acc.min, ww);
-            const block = isBlockLevel(cs.display) and cs.display != .table_cell;
+            const block = isBlockLevel(cs.display) and cs.display != .table_cell and !s.flexRow();
             if (block or n.is("br")) {
                 acc.pref = @max(acc.pref, acc.cur);
                 acc.cur = 0;

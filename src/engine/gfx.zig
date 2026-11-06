@@ -34,6 +34,8 @@ pub const Font = enum(u8) {
     mono_bold,
     ui,
     ui_bold,
+    /// Home-screen wordmark: Times New Roman (regular weight).
+    title,
     symbols,
 
     pub fn pick(mono: bool, bold: bool, italic: bool) Font {
@@ -70,6 +72,7 @@ fn candidates(f: Font) []const FontFile {
                 .sans_bold_italic => &.{ .{ .path = sup ++ "Arial Bold Italic.ttf" }, .{ .path = sup ++ "Arial Bold.ttf" } },
                 .serif => &.{ .{ .path = sup ++ "Georgia.ttf" }, .{ .path = sup ++ "Times New Roman.ttf" } },
                 .serif_bold => &.{ .{ .path = sup ++ "Georgia Bold.ttf" }, .{ .path = sup ++ "Times New Roman Bold.ttf" } },
+                .title => &.{ .{ .path = sup ++ "Times New Roman.ttf" }, .{ .path = "/Library/Fonts/Times New Roman.ttf" }, .{ .path = sup ++ "Georgia.ttf" } },
                 .symbols => &.{ .{ .path = sup ++ "Arial Unicode.ttf" }, .{ .path = "/System/Library/Fonts/Apple Symbols.ttf" } },
                 else => unreachable,
             };
@@ -83,6 +86,7 @@ fn candidates(f: Font) []const FontFile {
                 .sans_bold_italic => &.{ .{ .path = w ++ "arialbi.ttf" }, .{ .path = w ++ "arialbd.ttf" } },
                 .serif => &.{ .{ .path = w ++ "georgia.ttf" }, .{ .path = w ++ "times.ttf" } },
                 .serif_bold => &.{ .{ .path = w ++ "georgiab.ttf" }, .{ .path = w ++ "timesbd.ttf" } },
+                .title => &.{ .{ .path = w ++ "times.ttf" }, .{ .path = w ++ "georgia.ttf" } },
                 .symbols => &.{ .{ .path = w ++ "seguisym.ttf" }, .{ .path = w ++ "arial.ttf" } },
                 else => unreachable,
             };
@@ -95,6 +99,8 @@ fn candidates(f: Font) []const FontFile {
                 .sans_bold, .sans_bold_italic => &.{ .{ .path = dv ++ "DejaVuSans-Bold.ttf" }, .{ .path = dv2 ++ "DejaVuSans-Bold.ttf" } },
                 .serif => &.{ .{ .path = dv ++ "DejaVuSerif.ttf" }, .{ .path = dv2 ++ "DejaVuSerif.ttf" } },
                 .serif_bold => &.{ .{ .path = dv ++ "DejaVuSerif-Bold.ttf" }, .{ .path = dv2 ++ "DejaVuSerif-Bold.ttf" } },
+                // Liberation Serif is metric-compatible with Times New Roman.
+                .title => &.{ .{ .path = "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf" }, .{ .path = "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf" }, .{ .path = "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf" }, .{ .path = dv ++ "DejaVuSerif.ttf" } },
                 else => unreachable,
             };
         },

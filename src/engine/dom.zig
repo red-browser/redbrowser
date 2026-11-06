@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ffi = @import("ffi.zig");
+const cascade = @import("cascade.zig");
 
 pub const Kind = ffi.NodeKind;
 pub const none: u32 = std.math.maxInt(u32);
@@ -36,6 +37,8 @@ pub const Document = struct {
     nodes: []Node,
     attrs: []Attr,
     allocator: std.mem.Allocator,
+    /// Author stylesheets (<style> and fetched <link rel=stylesheet>), if any.
+    sheet: ?*cascade.Sheet = null,
 
     /// Parse `html` with html5ever. Strings in the result point into Rust-owned memory
     /// that lives until `deinit`.
@@ -87,6 +90,7 @@ pub const Document = struct {
     }
 
     pub fn deinit(self: *Document) void {
+        if (self.sheet) |sh| sh.destroy(self.allocator);
         self.allocator.free(self.nodes);
         self.allocator.free(self.attrs);
         ffi.re_doc_free(self.raw);
@@ -94,6 +98,31 @@ pub const Document = struct {
 
     pub fn get(self: *const Document, i: u32) *const Node {
         return &self.nodes[i];
+    }
+
+    pub fn indexOf(self: *const Document, node: *const Node) u32 {
+        return @intCast((@intFromPtr(node) - @intFromPtr(self.nodes.ptr)) / @sizeOf(Node));
+    }
+
+    /// Build the author stylesheet from <style> elements and already-fetched
+    /// external sheets, in document order. `external(node_index)` returns the
+    /// CSS text for a <link rel=stylesheet>, if it was loaded.
+    pub fn buildSheet(self: *Document, external: anytype) !void {
+        const sheet = try cascade.Sheet.create(self.allocator);
+        errdefer sheet.destroy(self.allocator);
+        for (self.nodes, 0..) |*n, i| {
+            if (n.kind != .element) continue;
+            if (n.is("style")) {
+                if (!mediaAllowsScreen(n.attr("media"))) continue;
+                if (n.attr("type")) |t| if (t.len > 0 and !std.ascii.eqlIgnoreCase(t, "text/css")) continue;
+                const text = try self.textContent(self.allocator, @intCast(i));
+                defer self.allocator.free(text);
+                sheet.addCss(text);
+            } else if (n.is("link")) {
+                if (external.get(@intCast(i))) |css_text| sheet.addCss(css_text);
+            }
+        }
+        self.sheet = sheet;
     }
 
     pub const ChildIterator = struct {
@@ -133,3 +162,24 @@ pub const Document = struct {
         while (it.next()) |c| try self.collectText(c, out);
     }
 };
+
+/// Whether a `media` attribute applies to a screen at all (width checks happen later).
+pub fn mediaAllowsScreen(media: ?[]const u8) bool {
+    const m = media orelse return true;
+    const t = std.mem.trim(u8, m, " ");
+    if (t.len == 0) return true;
+    return std.ascii.indexOfIgnoreCase(t, "print") == null or std.ascii.indexOfIgnoreCase(t, "screen") != null or std.ascii.indexOfIgnoreCase(t, "all") != null;
+}
+
+/// <link> elements that load a stylesheet we should fetch.
+pub fn isStylesheetLink(n: *const Node) bool {
+    if (!n.is("link")) return false;
+    const rel = n.attr("rel") orelse return false;
+    var it = std.mem.tokenizeAny(u8, rel, " \t\r\n");
+    var sheet = false;
+    while (it.next()) |r| {
+        if (std.ascii.eqlIgnoreCase(r, "stylesheet")) sheet = true;
+        if (std.ascii.eqlIgnoreCase(r, "alternate")) return false;
+    }
+    return sheet and n.attr("href") != null and n.attr("disabled") == null and mediaAllowsScreen(n.attr("media"));
+}

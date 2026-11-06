@@ -5,7 +5,6 @@ const dom = @import("../engine/dom.zig");
 const layout = @import("../engine/layout.zig");
 const gfx = @import("../engine/gfx.zig");
 const net = @import("net.zig");
-const pages = @import("pages.zig");
 const urlz = @import("url.zig");
 
 pub const Tab = struct {
@@ -112,15 +111,10 @@ pub const Tab = struct {
         const a = self.allocator;
         self.loading = false;
 
-        const html = if (res.isHtml())
-            try a.dupe(u8, res.body)
-        else if (std.ascii.startsWithIgnoreCase(res.content_type, "text/") or std.ascii.indexOfIgnoreCase(res.content_type, "json") != null or std.ascii.indexOfIgnoreCase(res.content_type, "xml") != null)
-            try pages.plainText(a, res.url, res.body)
-        else
-            try pages.unsupported(a, res.url, res.content_type);
-        defer a.free(html);
-
-        var doc = try dom.Document.parse(a, html);
+        var doc = if (res.doc) |d| blk: {
+            res.doc = null;
+            break :blk d;
+        } else try dom.Document.parse(a, res.body);
         errdefer doc.deinit();
 
         if (self.page) |*p| p.deinit();

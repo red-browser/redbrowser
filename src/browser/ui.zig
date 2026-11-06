@@ -706,12 +706,12 @@ pub fn drawHome(g: *Gfx, an: *Anim, wp: Wallpaper, bar: *AddressBar, hover: bool
     const area_h = win_h - chrome_h;
     const size = std.math.clamp(@min(win_w * 0.16, area_h * 0.28), 48, 190);
     const word = "RED";
-    const tw = g.measure(.ui_bold, size, word);
-    const m = g.metrics(.ui_bold, size);
+    const tw = g.measure(.title, size, word);
+    const m = g.metrics(.title, size);
     const baseline = @round(chrome_h + area_h * 0.5 - 28);
     const tx = @round((win_w - tw) / 2);
-    if (on_image) _ = g.text(.ui_bold, size, tx + 2, baseline + 3, word, rgba(0, 0, 0, 0.35));
-    _ = g.text(.ui_bold, size, tx, baseline, word, if (on_image) hex(0xffffff) else pal.accent);
+    if (on_image) _ = g.text(.title, size, tx + 2, baseline + 3, word, rgba(0, 0, 0, 0.35));
+    _ = g.text(.title, size, tx, baseline, word, if (on_image) hex(0xffffff) else pal.accent);
     _ = m;
 
     // search box
@@ -744,4 +744,22 @@ pub fn homeTextX(win_w: f32, win_h: f32) f32 {
 /// Rounded window outline (drawn last, when not maximized).
 pub fn drawWindowFrame(g: *Gfx, w: f32, h: f32) void {
     g.border(0, 0, w, h, 1, window_radius, gfx.withAlpha(pal.border, 0.9));
+}
+
+/// Shown over pages that render nothing because they are built by JavaScript.
+pub fn drawScriptNotice(g: *Gfx, win_w: f32, top: f32, win_h: f32, host: []const u8) void {
+    const w = @min(560, win_w - 48);
+    const h: f32 = 132;
+    const x = @round((win_w - w) / 2);
+    const y = @round(top + (win_h - top - h) / 2);
+    g.shadow(x, y, w, h, 12, 24, 8, rgba(0, 0, 0, if (pal.dark) 0.45 else 0.15));
+    g.roundRect(x, y, w, h, 12, pal.surface);
+    g.border(x, y, w, h, 1, 12, pal.border);
+    g.roundRect(x, y, 4, h, 2, pal.accent);
+    var buf: [160]u8 = undefined;
+    const title = std.fmt.bufPrint(&buf, "{s} needs JavaScript", .{if (host.len > 0) host else "this page"}) catch "this page needs JavaScript";
+    _ = g.text(.ui_bold, 15, x + 24, y + 38, title, pal.fg);
+    _ = g.text(.ui, 13, x + 24, y + 68, "This page is built by scripts in the browser, and", pal.muted);
+    _ = g.text(.ui, 13, x + 24, y + 88, "Red Browser doesn't run JavaScript yet. The HTML it", pal.muted);
+    _ = g.text(.ui, 13, x + 24, y + 108, "sent has no content to show.", pal.muted);
 }

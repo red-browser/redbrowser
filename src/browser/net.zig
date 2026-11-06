@@ -3,6 +3,7 @@
 const std = @import("std");
 const pages = @import("pages.zig");
 const urlz = @import("url.zig");
+const dom = @import("../engine/dom.zig");
 
 pub const user_agent = "Mozilla/5.0 (" ++ platform ++ ") RedBrowser/0.1 (WebRender; html5ever)";
 const platform = switch (@import("builtin").os.tag) {
@@ -12,6 +13,8 @@ const platform = switch (@import("builtin").os.tag) {
 };
 
 const max_body = 32 * 1024 * 1024;
+const max_css = 8 * 1024 * 1024;
+const max_sheets = 32;
 
 pub const Result = struct {
     allocator: std.mem.Allocator,
@@ -22,8 +25,11 @@ pub const Result = struct {
     body: []u8,
     content_type: []u8,
     status: u16,
+    /// Parsed document with its stylesheets, built on the loader thread.
+    doc: ?dom.Document = null,
 
     pub fn deinit(self: *Result) void {
+        if (self.doc) |*d| d.deinit();
         self.allocator.free(self.url);
         self.allocator.free(self.body);
         self.allocator.free(self.content_type);
@@ -58,7 +64,130 @@ fn worker(allocator: std.mem.Allocator, url: []u8, tab_id: u32, generation: u32,
         res.content_type = allocator.dupe(u8, "text/html") catch &.{};
         res.status = 0;
     };
+    prepareDocument(allocator, res) catch |err| std.log.warn("preparing {s}: {}", .{ res.url, err });
     notify(res);
+}
+
+/// Turn the response into a parsed document: wrap non-HTML in a viewer page,
+/// parse, then fetch and attach the page's stylesheets.
+fn prepareDocument(a: std.mem.Allocator, res: *Result) !void {
+    const html = if (res.isHtml())
+        try a.dupe(u8, res.body)
+    else if (std.ascii.startsWithIgnoreCase(res.content_type, "text/") or std.ascii.indexOfIgnoreCase(res.content_type, "json") != null or std.ascii.indexOfIgnoreCase(res.content_type, "xml") != null)
+        try pages.plainText(a, res.url, res.body)
+    else
+        try pages.unsupported(a, res.url, res.content_type);
+    defer a.free(html);
+
+    var doc = try dom.Document.parse(a, html);
+    errdefer doc.deinit();
+
+    var sheets = Sheets{ .a = a };
+    defer sheets.deinit();
+    const remote = urlz.scheme(res.url) != null and (std.ascii.startsWithIgnoreCase(res.url, "http:") or std.ascii.startsWithIgnoreCase(res.url, "https:"));
+    if (remote and res.isHtml()) {
+        var base: []const u8 = res.url;
+        var base_buf: ?[]u8 = null;
+        defer if (base_buf) |b| a.free(b);
+        if (doc.find("base")) |bi| {
+            if (doc.get(bi).attr("href")) |h| {
+                base_buf = try urlz.resolve(a, res.url, h);
+                base = base_buf.?;
+            }
+        }
+        var client = std.http.Client{ .allocator = a };
+        defer client.deinit();
+        var count: usize = 0;
+        for (doc.nodes, 0..) |*n, i| {
+            if (!dom.isStylesheetLink(n)) continue;
+            if (count == max_sheets) break;
+            count += 1;
+            const href = try urlz.resolve(a, base, n.attr("href").?);
+            defer a.free(href);
+            const css = fetchCss(a, &client, href, 0) catch |err| {
+                std.log.debug("stylesheet {s}: {}", .{ href, err });
+                continue;
+            };
+            try sheets.map.put(a, @intCast(i), css);
+        }
+    }
+    try doc.buildSheet(&sheets);
+    res.doc = doc;
+}
+
+const Sheets = struct {
+    a: std.mem.Allocator,
+    map: std.AutoHashMapUnmanaged(u32, []u8) = .{},
+
+    pub fn get(self: *const Sheets, node: u32) ?[]const u8 {
+        return self.map.get(node);
+    }
+
+    fn deinit(self: *Sheets) void {
+        var it = self.map.valueIterator();
+        while (it.next()) |v| self.a.free(v.*);
+        self.map.deinit(self.a);
+    }
+};
+
+/// GET a stylesheet; `@import`ed sheets (one level deep) are inlined in front.
+fn fetchCss(a: std.mem.Allocator, client: *std.http.Client, url: []const u8, depth: u32) ![]u8 {
+    const body = try get(a, client, url, "text/css,*/*;q=0.1", max_css);
+    if (depth > 0 or std.mem.indexOf(u8, body, "@import") == null) return body;
+    defer a.free(body);
+    var out = std.ArrayList(u8).init(a);
+    errdefer out.deinit();
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, body, i, "@import")) |at| {
+        const semi = std.mem.indexOfScalarPos(u8, body, at, ';') orelse break;
+        const stmt = body[at + 7 .. semi];
+        i = semi + 1;
+        const target = importTarget(stmt) orelse continue;
+        const abs = urlz.resolve(a, url, target) catch continue;
+        defer a.free(abs);
+        const sub = fetchCss(a, client, abs, depth + 1) catch continue;
+        defer a.free(sub);
+        try out.appendSlice(sub);
+        try out.append('\n');
+    }
+    try out.appendSlice(body);
+    return out.toOwnedSlice();
+}
+
+fn importTarget(stmt: []const u8) ?[]const u8 {
+    var t = std.mem.trim(u8, stmt, " \t\r\n");
+    if (std.mem.startsWith(u8, t, "url(")) {
+        const close = std.mem.indexOfScalar(u8, t, ')') orelse return null;
+        t = std.mem.trim(u8, t[4..close], " ");
+    } else {
+        // `"x.css" screen` → keep only the quoted part
+        if (t.len == 0) return null;
+        const q = t[0];
+        if (q != '"' and q != '\'') return null;
+        const end = std.mem.indexOfScalarPos(u8, t, 1, q) orelse return null;
+        return t[1..end];
+    }
+    if (t.len >= 2 and (t[0] == '"' or t[0] == '\'')) t = t[1 .. t.len - 1];
+    return if (t.len > 0) t else null;
+}
+
+/// Simple GET returning the body (follows redirects; errors on non-2xx).
+fn get(a: std.mem.Allocator, client: *std.http.Client, url: []const u8, accept: []const u8, limit: usize) ![]u8 {
+    const uri = try std.Uri.parse(url);
+    var header_buf: [32 * 1024]u8 = undefined;
+    var req = try client.open(.GET, uri, .{
+        .server_header_buffer = &header_buf,
+        .redirect_behavior = @enumFromInt(8),
+        .headers = .{ .user_agent = .{ .override = user_agent } },
+        .extra_headers = &.{.{ .name = "accept", .value = accept }},
+    });
+    defer req.deinit();
+    try req.send();
+    try req.finish();
+    try req.wait();
+    const status = @intFromEnum(req.response.status);
+    if (status < 200 or status >= 300) return error.HttpStatus;
+    return req.reader().readAllAlloc(a, limit);
 }
 
 fn load(a: std.mem.Allocator, url: []const u8, res: *Result) !void {
