@@ -991,3 +991,46 @@ test "selector matching basics" {
     const n = try parseNth("-n+3");
     try t.expect(nthMatches(n, 3) and !nthMatches(n, 4));
 }
+
+// ---- DOM API: querySelector / matches -----------------------------------------------
+
+pub const SelectorError = error{ SyntaxError, OutOfMemory };
+
+fn compile(a: Allocator, selector: []const u8) SelectorError![]const Complex {
+    const clean = stripComments(a, selector) catch return error.OutOfMemory;
+    return parseSelectorList(a, std.mem.trim(u8, clean, " \t\r\n"), false) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.Unsupported => error.SyntaxError,
+    };
+}
+
+/// Descendants of `root` (in document order) matching `selector`.
+pub fn select(a: Allocator, doc: *const dom.Document, root: u32, selector: []const u8, first_only: bool, out: *std.ArrayList(u32)) SelectorError!void {
+    const list = try compile(a, selector);
+    try selectIn(doc, root, list, first_only, out, 0);
+}
+
+fn selectIn(doc: *const dom.Document, i: u32, list: []const Complex, first_only: bool, out: *std.ArrayList(u32), depth: u32) SelectorError!void {
+    if (depth > 512) return;
+    var it = doc.children(i);
+    while (it.next()) |c| {
+        if (doc.get(c).kind == .element) {
+            for (list) |*cx| {
+                if (matchComplex(doc, c, cx, 0)) {
+                    try out.append(c);
+                    if (first_only) return;
+                    break;
+                }
+            }
+        }
+        try selectIn(doc, c, list, first_only, out, depth + 1);
+        if (first_only and out.items.len > 0) return;
+    }
+}
+
+pub fn matches(a: Allocator, doc: *const dom.Document, i: u32, selector: []const u8) SelectorError!bool {
+    if (doc.get(i).kind != .element) return false;
+    const list = try compile(a, selector);
+    for (list) |*cx| if (matchComplex(doc, i, cx, 0)) return true;
+    return false;
+}

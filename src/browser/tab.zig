@@ -5,6 +5,8 @@ const dom = @import("../engine/dom.zig");
 const layout = @import("../engine/layout.zig");
 const gfx = @import("../engine/gfx.zig");
 const net = @import("net.zig");
+const script_mod = @import("script.zig");
+const Script = script_mod.Script;
 const urlz = @import("url.zig");
 
 pub const Tab = struct {
@@ -26,6 +28,10 @@ pub const Tab = struct {
     scroll: f32 = 0,
     view_scroll: f32 = 0,
     pending_fragment: ?[]u8 = null,
+    /// SpiderMonkey global running this document's scripts (JS enabled pages).
+    script: ?*Script = null,
+    /// `doc.version` the current `page` was laid out from.
+    layout_version: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, id: u32) !Tab {
         return .{
@@ -39,6 +45,7 @@ pub const Tab = struct {
 
     pub fn deinit(self: *Tab) void {
         const a = self.allocator;
+        self.stopScript();
         if (self.page) |*p| p.deinit();
         if (self.doc) |*d| d.deinit();
         for (self.history.items) |h| a.free(h);
@@ -100,6 +107,11 @@ pub const Tab = struct {
         try self.navigate(u, false, notify);
     }
 
+    pub fn stopScript(self: *Tab) void {
+        if (self.script) |sc| sc.destroy();
+        self.script = null;
+    }
+
     pub fn stop(self: *Tab) void {
         self.generation +%= 1;
         self.loading = false;
@@ -115,8 +127,10 @@ pub const Tab = struct {
             res.doc = null;
             break :blk d;
         } else try dom.Document.parse(a, res.body);
+        if (self.script) |sc| sc.page = null;
         errdefer doc.deinit();
 
+        self.stopScript();
         if (self.page) |*p| p.deinit();
         self.page = null;
         if (self.doc) |*d| d.deinit();
@@ -155,18 +169,63 @@ pub const Tab = struct {
         try self.setOwned(&self.title, title);
         self.scroll = 0;
         self.view_scroll = 0;
+
+        // Run the page's JavaScript (http/https/file pages only).
+        const scriptable = std.ascii.startsWithIgnoreCase(self.url, "http:") or std.ascii.startsWithIgnoreCase(self.url, "https:") or std.ascii.startsWithIgnoreCase(self.url, "file:");
+        if (scriptable and res.isHtml() and net.javascript_enabled.load(.monotonic)) {
+            if (Script.create(a, &self.doc.?, self.url, self.base_url, self.id, self.generation)) |sc| {
+                self.script = sc;
+                sc.start();
+                _ = self.syncFromScript();
+            } else |err| std.log.warn("javascript unavailable: {}", .{err});
+        }
         return true;
+    }
+
+    /// Pick up title / URL changes made by scripts. Returns true if anything changed.
+    pub fn syncFromScript(self: *Tab) bool {
+        const sc = self.script orelse return false;
+        var changed = false;
+        if (sc.title) |t| {
+            const c = collapse(t);
+            if (c.len > 0 and !std.mem.eql(u8, c, self.title)) {
+                self.setOwned(&self.title, c) catch {};
+                changed = true;
+            }
+            self.allocator.free(t);
+            sc.title = null;
+        }
+        if (sc.url_changed) {
+            sc.url_changed = false;
+            self.setOwned(&self.url, sc.url) catch {};
+            if (self.history.items.len > 0) {
+                const slot = &self.history.items[self.history_index];
+                if (self.allocator.dupe(u8, sc.url)) |u| {
+                    self.allocator.free(slot.*);
+                    slot.* = u;
+                } else |_| {}
+            }
+            changed = true;
+        }
+        return changed;
     }
 
     /// (Re)layout for the given content width when needed.
     pub fn ensureLayout(self: *Tab, g: *const gfx.Gfx, width: f32) !void {
         const doc = &(self.doc orelse return);
         if (self.page) |*p| {
-            if (p.width == width) return;
+            if (p.width == width and self.layout_version == doc.version) return;
+            if (self.script) |sc| sc.page = null;
             p.deinit();
             self.page = null;
         }
+        if (doc.styles_dirty) doc.buildSheet() catch {};
+        self.layout_version = doc.version;
         self.page = try layout.layoutDocument(self.allocator, g, doc, width);
+        if (self.script) |sc| {
+            sc.page = &self.page.?;
+            sc.viewport[0] = width;
+        }
         if (self.pending_fragment) |frag| {
             self.scroll = self.fragmentOffset(frag) orelse 0;
             self.view_scroll = self.scroll;
@@ -205,6 +264,16 @@ pub const Tab = struct {
         self.scroll = std.math.clamp(self.scroll + dy, 0, self.maxScroll(view_h));
     }
 };
+
+/// Debug aid: REDBROWSER_DUMP_DOM=path writes the DOM after scripts ran.
+pub fn dumpDom(doc: *const dom.Document) void {
+    const path = std.posix.getenv("REDBROWSER_DUMP_DOM") orelse return;
+    const f = std.fs.cwd().createFile(path, .{}) catch return;
+    defer f.close();
+    var bw = std.io.bufferedWriter(f.writer());
+    doc.serialize(bw.writer(), 0, false) catch {};
+    bw.flush() catch {};
+}
 
 fn urlNoFragment(u: []const u8) []const u8 {
     return if (std.mem.indexOfScalar(u8, u, '#')) |i| u[0..i] else u;

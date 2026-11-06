@@ -27,6 +27,10 @@ pub fn build(b: *std.Build) void {
     exe.step.dependOn(&cargo.step);
     exe.addObjectFile(engine_lib);
     linkPlatform(b, exe, is_macos);
+    // SpiderMonkey (inside the engine lib) is C++ and uses zlib.
+    exe.linkLibCpp();
+    exe.linkSystemLibrary("z");
+    exe.link_gc_sections = true;
     if (is_macos) {
         for ([_][]const u8{ "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "AppKit", "Security", "SystemConfiguration" }) |f| exe.linkFramework(f);
         exe.linkSystemLibrary("iconv");

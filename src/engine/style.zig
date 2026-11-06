@@ -126,7 +126,7 @@ pub fn compute(doc: *const dom.Document, node: *const dom.Node, parent: *const S
     const em = parent.font_size;
 
     // --- user agent stylesheet --------------------------------------------
-    if (anyOf(tag, &hidden_tags)) {
+    if (anyOf(tag, &hidden_tags) or (doc.scripting and std.mem.eql(u8, tag, "noscript"))) {
         s.display = .none;
     } else if (anyOf(tag, &block_tags)) {
         s.display = .block;

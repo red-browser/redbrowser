@@ -755,11 +755,11 @@ pub fn drawScriptNotice(g: *Gfx, win_w: f32, top: f32, win_h: f32, host: []const
     g.shadow(x, y, w, h, 12, 24, 8, rgba(0, 0, 0, if (pal.dark) 0.45 else 0.15));
     g.roundRect(x, y, w, h, 12, pal.surface);
     g.border(x, y, w, h, 1, 12, pal.border);
-    g.roundRect(x, y, 4, h, 2, pal.accent);
+    g.roundRect(x + 10, y + 22, 3, h - 44, 1.5, pal.accent);
     var buf: [160]u8 = undefined;
     const title = std.fmt.bufPrint(&buf, "{s} needs JavaScript", .{if (host.len > 0) host else "this page"}) catch "this page needs JavaScript";
-    _ = g.text(.ui_bold, 15, x + 24, y + 38, title, pal.fg);
-    _ = g.text(.ui, 13, x + 24, y + 68, "This page is built by scripts in the browser, and", pal.muted);
-    _ = g.text(.ui, 13, x + 24, y + 88, "Red Browser doesn't run JavaScript yet. The HTML it", pal.muted);
-    _ = g.text(.ui, 13, x + 24, y + 108, "sent has no content to show.", pal.muted);
+    _ = g.text(.ui_bold, 15, x + 24, y + 38, title, pal.label);
+    _ = g.text(.ui, 13, x + 24, y + 68, "This page is built by scripts in the browser, and", pal.secondary);
+    _ = g.text(.ui, 13, x + 24, y + 88, "Red Browser doesn't run JavaScript yet. The HTML it", pal.secondary);
+    _ = g.text(.ui, 13, x + 24, y + 108, "sent has no content to show.", pal.secondary);
 }

@@ -2,7 +2,7 @@
 name = "redengine"
 version = "0.1.0"
 edition = "2021"
-description = "Thin C-ABI bridge from RedBrowser (Zig) to Mozilla/Servo engine crates: WebRender + html5ever"
+description = "Thin C-ABI bridge from RedBrowser (Zig) to Mozilla/Servo engine crates: WebRender + html5ever + SpiderMonkey"
 license = "Apache-2.0"
 
 [lib]
@@ -15,6 +15,9 @@ euclid = "0.22"
 html5ever = "0.39"
 markup5ever_rcdom = "0.39.0"
 ttf-parser = "0.25"
+# SpiderMonkey (Firefox's JS engine) via Servo's bindings; the jit+intl
+# defaults let mozjs_sys download a prebuilt static library.
+mozjs = "0.26.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 
 [profile.dev]

@@ -8,6 +8,7 @@ const ffi = @import("../engine/ffi.zig");
 const ui = @import("ui.zig");
 const net = @import("net.zig");
 const urlz = @import("url.zig");
+const script_mod = @import("script.zig");
 const Tab = @import("tab.zig").Tab;
 const pages = @import("pages.zig");
 const Settings = @import("settings.zig").Settings;
@@ -18,6 +19,15 @@ const home_url = "about:home";
 var load_event_type: u32 = 0;
 /// SDL event type carrying a wallpaper path chosen in the file dialog.
 var wallpaper_event_type: u32 = 0;
+/// SDL event type carrying a finished fetch()/XHR/script request.
+var fetch_event_type: u32 = 0;
+
+fn onFetchComplete(res: *net.FetchResult) void {
+    var ev: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    ev.type = fetch_event_type;
+    ev.user.data1 = res;
+    if (!c.SDL_PushEvent(&ev)) res.deinit();
+}
 
 fn onWallpaperChosen(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.C) void {
     _ = userdata;
@@ -80,6 +90,8 @@ pub const App = struct {
     current_cursor: ?*c.SDL_Cursor = null,
     opts: Options,
     frames_since_idle: u32 = 0,
+    /// Debug: when the screenshot countdown started (REDBROWSER_WAIT).
+    shot_start: i64 = 0,
     pending_debug_scroll: ?f32 = null,
 
     pub fn init(a: std.mem.Allocator, opts: Options) !*App {
@@ -87,8 +99,10 @@ pub const App = struct {
             std.log.err("SDL_Init: {s}", .{c.SDL_GetError()});
             return error.SDLInitFailed;
         }
-        load_event_type = c.SDL_RegisterEvents(2);
+        load_event_type = c.SDL_RegisterEvents(3);
         wallpaper_event_type = load_event_type + 1;
+        fetch_event_type = load_event_type + 2;
+        script_mod.fetch_notify = onFetchComplete;
 
         _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 2);
@@ -379,7 +393,14 @@ pub const App = struct {
 
     fn followLink(self: *App, href: []const u8, new_tab: bool) void {
         const t = self.tab();
-        if (std.ascii.startsWithIgnoreCase(std.mem.trim(u8, href, " "), "javascript:")) return;
+        const trimmed = std.mem.trim(u8, href, " ");
+        if (std.ascii.startsWithIgnoreCase(trimmed, "javascript:")) {
+            if (t.script) |sc| {
+                sc.runUrl(trimmed["javascript:".len..]);
+                self.afterScript(t);
+            }
+            return;
+        }
         const resolved = urlz.resolve(self.a, if (t.base_url.len > 0) t.base_url else t.url, href) catch return;
         defer self.a.free(resolved);
         if (new_tab and !std.mem.startsWith(u8, resolved, "about:settings?")) {
@@ -406,8 +427,57 @@ pub const App = struct {
     fn anyLoading(self: *const App) bool {
         for (self.tabs.items) |t| {
             if (t.loading) return true;
+            if (t.script) |sc| if (sc.busy()) return true;
         }
         return false;
+    }
+
+    /// After running script code for `t`: apply navigation / title / URL
+    /// changes it requested and schedule a redraw if it touched the DOM.
+    fn afterScript(self: *App, t: *Tab) void {
+        const sc = t.script orelse return;
+        if (t.syncFromScript() and t == self.tab()) {
+            self.updateTitle();
+            self.dirty = true;
+        }
+        const reqs = sc.takeRequests();
+        defer {
+            for (reqs) |r| switch (r) {
+                .navigate => |n| self.a.free(n.url),
+                .open => |u| self.a.free(u),
+                .history => {},
+            };
+            self.a.free(reqs);
+        }
+        for (reqs) |r| switch (r) {
+            .navigate => |n| {
+                // Navigation replaces the script (and its requests) — handle the first only.
+                t.navigate(n.url, !n.replace, onLoadComplete) catch {};
+                self.dirty = true;
+                return;
+            },
+            .open => |u| _ = self.openTab(u, false) catch {},
+            .history => |d| {
+                if (d < 0) t.back(onLoadComplete) catch {} else t.forward(onLoadComplete) catch {};
+                return;
+            },
+        };
+        if (t.doc) |*d| if (d.version != t.layout_version or d.styles_dirty) {
+            self.dirty = true;
+        };
+    }
+
+    /// Fire due JS timers in every tab; returns ms until the next one.
+    fn runTimers(self: *App) ?i64 {
+        const now = std.time.milliTimestamp();
+        var next: ?i64 = null;
+        for (self.tabs.items) |t| {
+            const sc = t.script orelse continue;
+            if (sc.fireTimers(now)) |due| next = if (next) |n| @min(n, due) else due;
+            self.afterScript(t);
+            if (t.script == null) continue;
+        }
+        return if (next) |n| @max(0, n - now) else null;
     }
 
     // ------------------------------------------------------------------
@@ -519,7 +589,8 @@ pub const App = struct {
     pub fn run(self: *App) !void {
         while (self.running) {
             const loading = self.anyLoading();
-            const timeout: i32 = if (self.anim.animating) 1 else if (loading or self.bar.focused or self.home_bar.focused) 33 else 1000;
+            var timeout: i32 = if (self.anim.animating) 1 else if (loading or self.bar.focused or self.home_bar.focused) 33 else 1000;
+            if (self.runTimers()) |ms| timeout = @min(timeout, @as(i32, @intCast(@min(ms, 1000))));
             var ev: c.SDL_Event = undefined;
             if (c.SDL_WaitEventTimeout(&ev, timeout)) {
                 self.handle(&ev);
@@ -530,9 +601,14 @@ pub const App = struct {
                 self.draw();
                 self.dirty = false;
                 if (self.opts.screenshot_path) |p| {
-                    if (!self.anyLoading() and !self.anim.animating) {
+                    const wait_ms: i64 = if (std.posix.getenv("REDBROWSER_WAIT")) |w| std.fmt.parseInt(i64, w, 10) catch 0 else 0;
+                    if (self.shot_start == 0) self.shot_start = std.time.milliTimestamp();
+                    const waited = std.time.milliTimestamp() - self.shot_start >= wait_ms;
+                    if (!waited) self.dirty = true;
+                    if (waited and !self.anyLoading() and !self.anim.animating) {
                         self.frames_since_idle += 1;
                         if (self.frames_since_idle >= 2) {
+                            if (self.tab().doc) |*d| @import("tab.zig").dumpDom(d);
                             self.saveScreenshot(p);
                             self.running = false;
                         } else self.dirty = true;
@@ -581,6 +657,19 @@ pub const App = struct {
                     const p: [*:0]u8 = @ptrCast(ev.user.data1 orelse return);
                     defer c.SDL_free(p);
                     self.setWallpaperFrom(std.mem.span(p));
+                    return;
+                }
+                if (ev.type == fetch_event_type) {
+                    const res: *net.FetchResult = @ptrCast(@alignCast(ev.user.data1));
+                    defer res.deinit();
+                    for (self.tabs.items) |t| {
+                        if (t.id != res.tab_id) continue;
+                        const sc = t.script orelse continue;
+                        if (sc.generation != res.generation) continue;
+                        sc.onFetch(res);
+                        self.afterScript(t);
+                    }
+                    self.dirty = true;
                     return;
                 }
                 if (ev.type == load_event_type) {
@@ -728,9 +817,22 @@ pub const App = struct {
             .win_max => self.toggleMaximize(),
             .win_close => self.running = false,
             .theme => self.cycleTheme(),
-            .content => if (self.linkUnder(x, y)) |h| {
+            .content => {
                 const mod = c.SDL_GetModState();
-                self.followLink(h, primaryMod(mod));
+                if (t.script) |sc| {
+                    if (t.page) |*page| {
+                        const top = self.chromeH();
+                        if (page.nodeAt(x, y - top + t.view_scroll)) |node| {
+                            const mods: u32 = (if (mod & c.SDL_KMOD_CTRL != 0) @as(u32, 1) else 0) | (if (mod & c.SDL_KMOD_SHIFT != 0) @as(u32, 2) else 0) | (if (mod & c.SDL_KMOD_ALT != 0) @as(u32, 4) else 0) | (if (mod & c.SDL_KMOD_GUI != 0) @as(u32, 8) else 0);
+                            const gen = t.generation;
+                            const allowed = sc.click(node, x, y - top, mods);
+                            self.afterScript(t);
+                            // The handler may have navigated (replacing the script).
+                            if (!allowed or t.generation != gen) return;
+                        }
+                    }
+                }
+                if (self.linkUnder(x, y)) |h| self.followLink(h, primaryMod(mod));
             },
             else => {},
         }

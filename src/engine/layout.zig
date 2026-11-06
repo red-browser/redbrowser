@@ -42,11 +42,15 @@ pub const Item = union(enum) {
 };
 
 pub const Link = struct { x: f32, y: f32, w: f32, h: f32, href: []const u8 };
+/// A painted box and the DOM node it belongs to (for clicks / element rects).
+pub const Hit = struct { x: f32, y: f32, w: f32, h: f32, node: u32 };
 
 pub const Page = struct {
     arena: std.heap.ArenaAllocator,
     items: std.ArrayListUnmanaged(Item) = .{},
     links: std.ArrayListUnmanaged(Link) = .{},
+    /// Outer boxes come before the boxes inside them, so search from the end.
+    hits: std.ArrayListUnmanaged(Hit) = .{},
     width: f32 = 0,
     height: f32 = 0,
     background: Color = gfx.hex(0xffffff),
@@ -56,6 +60,42 @@ pub const Page = struct {
 
     pub fn deinit(self: *Page) void {
         self.arena.deinit();
+    }
+
+    /// Innermost DOM node painted at (x, y), page coordinates.
+    pub fn nodeAt(self: *const Page, x: f32, y: f32) ?u32 {
+        var i = self.hits.items.len;
+        while (i > 0) {
+            i -= 1;
+            const h = self.hits.items[i];
+            if (h.node != dom.none and x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h) return h.node;
+        }
+        return null;
+    }
+
+    /// Bounding box (x, y, w, h) of everything painted for `node`.
+    pub fn boxOf(self: *const Page, node: u32) ?[4]f32 {
+        var found = false;
+        var x0: f32 = 0;
+        var y0: f32 = 0;
+        var x1: f32 = 0;
+        var y1: f32 = 0;
+        for (self.hits.items) |h| {
+            if (h.node != node) continue;
+            if (!found) {
+                x0 = h.x;
+                y0 = h.y;
+                x1 = h.x + h.w;
+                y1 = h.y + h.h;
+                found = true;
+            } else {
+                x0 = @min(x0, h.x);
+                y0 = @min(y0, h.y);
+                x1 = @max(x1, h.x + h.w);
+                y1 = @max(y1, h.y + h.h);
+            }
+        }
+        return if (found) .{ x0, y0, x1 - x0, y1 - y0 } else null;
     }
 
     pub fn linkAt(self: *const Page, x: f32, y: f32) ?[]const u8 {
@@ -87,6 +127,7 @@ pub const Page = struct {
 const BoxKind = enum { image, text_input, button, checkbox, radio, textarea };
 
 const Run = struct {
+    node: u32 = dom.none,
     style: *const Style,
     href: ?[]const u8,
     x: f32,
@@ -103,6 +144,8 @@ const Ctx = struct {
     a: std.mem.Allocator,
     page: *Page,
     marker: ?Marker = null,
+    /// Element whose content is being laid out (owner of new runs).
+    cur_node: u32 = dom.none,
     depth: u32 = 0,
 
     fn item(self: *Ctx, it: Item) !void {
@@ -135,9 +178,9 @@ const Flow = struct {
     fn runFor(self: *Flow, s: *const Style, href: ?[]const u8) !*Run {
         if (self.runs.items.len > 0) {
             const last = &self.runs.items[self.runs.items.len - 1];
-            if (last.box == null and last.style == s and eqlOpt(last.href, href)) return last;
+            if (last.box == null and last.style == s and eqlOpt(last.href, href) and last.node == self.ctx.cur_node) return last;
         }
-        try self.runs.append(self.ctx.a, .{ .style = s, .href = href, .x = self.line_x, .w = 0 });
+        try self.runs.append(self.ctx.a, .{ .style = s, .href = href, .x = self.line_x, .w = 0, .node = self.ctx.cur_node });
         return &self.runs.items[self.runs.items.len - 1];
     }
 
@@ -174,7 +217,7 @@ const Flow = struct {
         if (self.runs.items.len > 0 and self.line_x + space + w > self.width) try self.flushLine(false);
         if (self.runs.items.len == 0 and self.pending_margin > 0) self.advanceMargin();
         if (self.runs.items.len > 0) self.line_x += space;
-        try self.runs.append(self.ctx.a, .{ .style = s, .href = href, .x = self.line_x, .w = w, .box = .{ .kind = kind, .h = h, .label = label } });
+        try self.runs.append(self.ctx.a, .{ .style = s, .href = href, .x = self.line_x, .w = w, .box = .{ .kind = kind, .h = h, .label = label }, .node = self.ctx.cur_node });
         self.line_x += w;
         self.pending_space = false;
     }
@@ -244,6 +287,7 @@ const Flow = struct {
                 }
             }
             if (r.href) |h| try ctx.page.links.append(ctx.a, .{ .x = rx, .y = self.y, .w = r.w, .h = line_h, .href = h });
+            if (r.node != dom.none) try ctx.page.hits.append(ctx.a, .{ .x = rx, .y = self.y, .w = r.w, .h = line_h, .node = r.node });
         }
 
         self.y += line_h;
@@ -343,6 +387,9 @@ fn layoutNode(ctx: *Ctx, flow: *Flow, idx: u32, parent: *const Style, href: ?[]c
     }
     if (ctx.depth > 256) return;
     ctx.depth += 1;
+    const saved_node = ctx.cur_node;
+    ctx.cur_node = idx;
+    defer ctx.cur_node = saved_node;
     defer ctx.depth -= 1;
 
     const s = try ctx.a.create(Style);
@@ -500,6 +547,9 @@ fn layoutBlock(ctx: *Ctx, flow: *Flow, idx: u32, s: *Style, href: ?[]const u8) a
     const has_bg = s.background != null and !s.hidden;
     const bg_slot = if (has_bg) try ctx.slot() else 0;
     const y0 = flow.y;
+    // Reserve the block's hit box before its children's (inner boxes win).
+    const hit_slot = ctx.page.hits.items.len;
+    try ctx.page.hits.append(ctx.a, .{ .x = x, .y = y0, .w = w, .h = 0, .node = idx });
     const cx = x + bw + s.padding.left;
     const cw = @max(0, w - horiz_extra);
     const cy = y0 + bw + s.padding.top;
@@ -523,6 +573,7 @@ fn layoutBlock(ctx: *Ctx, flow: *Flow, idx: u32, s: *Style, href: ?[]const u8) a
     }
 
     const total = h + 2 * bw + s.padding.top + s.padding.bottom;
+    ctx.page.hits.items[hit_slot].h = total;
     if (has_bg) ctx.page.items.items[bg_slot] = .{ .rect = .{ .x = x, .y = y0, .w = w, .h = total, .color = s.background.?, .radius = s.radius } };
     if (bw > 0 and !s.hidden and !node.is("hr")) try ctx.item(.{ .border = .{ .x = x, .y = y0, .w = w, .h = total, .width = bw, .radius = s.radius, .color = s.border_color } });
 

@@ -34,7 +34,7 @@ pub const Font = enum(u8) {
     mono_bold,
     ui,
     ui_bold,
-    /// Home-screen wordmark: Times New Roman (regular weight).
+    /// Home-screen wordmark: Didot (hairline serif), falling back to Times New Roman.
     title,
     symbols,
 
@@ -72,7 +72,7 @@ fn candidates(f: Font) []const FontFile {
                 .sans_bold_italic => &.{ .{ .path = sup ++ "Arial Bold Italic.ttf" }, .{ .path = sup ++ "Arial Bold.ttf" } },
                 .serif => &.{ .{ .path = sup ++ "Georgia.ttf" }, .{ .path = sup ++ "Times New Roman.ttf" } },
                 .serif_bold => &.{ .{ .path = sup ++ "Georgia Bold.ttf" }, .{ .path = sup ++ "Times New Roman Bold.ttf" } },
-                .title => &.{ .{ .path = sup ++ "Times New Roman.ttf" }, .{ .path = "/Library/Fonts/Times New Roman.ttf" }, .{ .path = sup ++ "Georgia.ttf" } },
+                .title => &.{ .{ .path = "/System/Library/Fonts/Supplemental/Didot.ttc" }, .{ .path = "/Library/Fonts/Didot.ttc" }, .{ .path = sup ++ "Times New Roman.ttf" } },
                 .symbols => &.{ .{ .path = sup ++ "Arial Unicode.ttf" }, .{ .path = "/System/Library/Fonts/Apple Symbols.ttf" } },
                 else => unreachable,
             };

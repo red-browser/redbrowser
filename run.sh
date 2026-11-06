@@ -30,7 +30,7 @@ if [[ "${RELEASE:-0}" == "1" ]]; then
 else
     PROFILE=debug; ZIG_OPT=Debug; CARGO_FLAGS=()
 fi
-echo "==> Building redengine (WebRender + html5ever, $PROFILE)..."
+echo "==> Building redengine (WebRender + html5ever + SpiderMonkey, $PROFILE)..."
 cargo build -q --manifest-path engine/Cargo.toml ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 ENGINE_LIB="engine/target/$PROFILE/libredengine.a"
 
@@ -44,8 +44,10 @@ Darwin)
     "$ZIG" build-obj src/main.zig -target "$ARCH-macos" -O "$ZIG_OPT" -lc -fcompiler-rt \
         -I/opt/homebrew/include -I"$SDK/usr/include" \
         --name redbrowser -femit-bin=zig-out/obj/redbrowser.o
+    # SpiderMonkey is C++ (libc++, zlib). -dead_strip mirrors rustc's own link
+    # and is required: the prebuilt archive has sections ld64 rejects otherwise.
     cc zig-out/obj/redbrowser.o "$ENGINE_LIB" -o zig-out/bin/redbrowser \
-        -L/opt/homebrew/lib -lSDL3 -liconv \
+        -L/opt/homebrew/lib -lSDL3 -liconv -lc++ -lz -Wl,-dead_strip \
         -framework CoreFoundation -framework CoreGraphics -framework CoreText \
         -framework Foundation -framework AppKit -framework Security \
         -framework SystemConfiguration -framework OpenGL
@@ -92,7 +94,7 @@ PLIST
     ;;
 *)
     "$ZIG" build-exe src/main.zig "$ENGINE_LIB" -O "$ZIG_OPT" \
-        -lSDL3 -lc -ldl -lpthread -lm \
+        -lSDL3 -lc -ldl -lpthread -lm -lstdc++ -lz \
         --name redbrowser -femit-bin=zig-out/bin/redbrowser
     RUN_BIN=zig-out/bin/redbrowser
     ;;

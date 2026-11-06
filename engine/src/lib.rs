@@ -10,6 +10,8 @@
 //! Everything browser-shaped (UI, layout, networking, tabs, input) lives in Zig.
 //! Keep this file a bridge: no browser logic here.
 
+mod js;
+
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
 use std::rc::Rc;
@@ -816,20 +818,42 @@ fn flatten(handle: &Handle, parent: i32, out: &mut Vec<FlatNode>) -> i32 {
     idx
 }
 
-/// Parse an HTML document (bytes are decoded as UTF-8, lossily).
-#[no_mangle]
-pub extern "C" fn re_html_parse(input: *const u8, len: usize) -> *mut Doc {
-    let src = String::from_utf8_lossy(unsafe { bytes(input, len) }).into_owned();
-    // No script engine yet, so parse the way a browser with scripting disabled
-    // does: <noscript> content becomes real markup and is shown.
-    let opts = html5ever::ParseOpts {
+fn parse_opts(scripting: bool) -> html5ever::ParseOpts {
+    html5ever::ParseOpts {
         tree_builder: html5ever::tree_builder::TreeBuilderOpts {
-            scripting_enabled: false,
+            scripting_enabled: scripting,
             ..Default::default()
         },
         ..Default::default()
-    };
-    let dom = html5ever::parse_document(RcDom::default(), opts)
+    }
+}
+
+/// Parse an HTML document (bytes are decoded as UTF-8, lossily). With
+/// `scripting` off (JavaScript disabled), <noscript> content becomes markup.
+#[no_mangle]
+pub extern "C" fn re_html_parse2(input: *const u8, len: usize, scripting: bool) -> *mut Doc {
+    let src = String::from_utf8_lossy(unsafe { bytes(input, len) }).into_owned();
+    let dom = html5ever::parse_document(RcDom::default(), parse_opts(scripting))
+        .from_utf8()
+        .read_from(&mut src.as_bytes())
+        .unwrap_or_default();
+    let mut nodes = Vec::new();
+    flatten(&dom.document, -1, &mut nodes);
+    Box::into_raw(Box::new(Doc { nodes }))
+}
+
+#[no_mangle]
+pub extern "C" fn re_html_parse(input: *const u8, len: usize) -> *mut Doc {
+    re_html_parse2(input, len, false)
+}
+
+/// Parse an HTML fragment as if it were the content of a <body> (innerHTML).
+/// The result is a document whose first element (<html>) holds the nodes.
+#[no_mangle]
+pub extern "C" fn re_html_parse_fragment(input: *const u8, len: usize) -> *mut Doc {
+    let src = String::from_utf8_lossy(unsafe { bytes(input, len) }).into_owned();
+    let ctx = html5ever::QualName::new(None, html5ever::ns!(html), html5ever::local_name!("body"));
+    let dom = html5ever::parse_fragment(RcDom::default(), parse_opts(true), ctx, vec![], false)
         .from_utf8()
         .read_from(&mut src.as_bytes())
         .unwrap_or_default();

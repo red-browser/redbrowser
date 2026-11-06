@@ -61,6 +61,33 @@ pub extern fn re_engine_versions() [*:0]const u8;
 
 // HTML parser (html5ever)
 pub extern fn re_html_parse(input: [*]const u8, len: usize) ?*Doc;
+pub extern fn re_html_parse2(input: [*]const u8, len: usize, scripting: bool) ?*Doc;
+pub extern fn re_html_parse_fragment(input: [*]const u8, len: usize) ?*Doc;
+
+// ---- SpiderMonkey (engine/src/js.rs) ----
+pub const JsCtx = opaque {};
+pub const Str = extern struct {
+    ptr: ?[*]const u8,
+    len: usize,
+
+    pub fn slice(self: Str) []const u8 {
+        return if (self.ptr) |p| p[0..self.len] else "";
+    }
+    pub fn of(s: []const u8) Str {
+        return .{ .ptr = s.ptr, .len = s.len };
+    }
+};
+pub const JsTag = enum(u32) { undefined = 0, null = 1, boolean = 2, number = 3, string = 4, _ };
+pub const JsValue = extern struct {
+    tag: JsTag = .undefined,
+    num: f64 = 0,
+    str: Str = .{ .ptr = null, .len = 0 },
+};
+pub const HostFn = *const fn (user: ?*anyopaque, op: Str, args: [*]const Str, argc: u32, out: *JsValue) callconv(.C) void;
+pub extern fn re_js_init() bool;
+pub extern fn re_js_ctx_new(host: HostFn, user: ?*anyopaque) ?*JsCtx;
+pub extern fn re_js_ctx_free(ctx: *JsCtx) void;
+pub extern fn re_js_eval(ctx: *JsCtx, src: [*]const u8, len: usize, name: [*:0]const u8, line: u32, out: ?*JsValue) bool;
 pub extern fn re_doc_free(doc: *Doc) void;
 pub extern fn re_doc_len(doc: *const Doc) u32;
 pub extern fn re_doc_node(doc: *const Doc, i: u32, out: *Node) bool;
